@@ -192,26 +192,34 @@ def compute_top_index_per_lan_for_layer(
     multilingual_texts: List[str],
     device: str,
     n_texts_per_lan: int = 10,
+    progress_callback=None,
 ):
-    sae_activations_per_language = {}
     block_size = len(multilingual_texts) // len(target_lan)
+    avg_act_per_lan = []
+    sae_device = next(sae.parameters()).device
 
     for i, lan in enumerate(target_lan):
         lang_texts = multilingual_texts[i * block_size : (i + 1) * block_size][:n_texts_per_lan]
-        activations = []
-        sae_device = next(sae.parameters()).device
+        running_sum = None
+        total_tokens = 0
         for text in lang_texts:
             inputs = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
             target_act = gather_residual_activations(model, layer, inputs)
             sae_act = sae.encode(target_act.to(device=sae_device, dtype=torch.float32)).cpu()
             if sae_act.ndim == 2:
                 sae_act = sae_act.unsqueeze(0)
-            activations.append(sae_act)
-        sae_activations_per_language[lan] = activations
-
-    avg_act_per_lan = []
-    for lan in target_lan:
-        avg_act_per_lan.append(torch.cat(sae_activations_per_language[lan], dim=1).mean(-2))
+            token_sum = sae_act.sum(dim=1).sum(dim=0)
+            token_count = sae_act.shape[0] * sae_act.shape[1]
+            if running_sum is None:
+                running_sum = token_sum
+            else:
+                running_sum = running_sum + token_sum
+            total_tokens += token_count
+            if progress_callback is not None:
+                progress_callback()
+        if running_sum is None or total_tokens == 0:
+            raise ValueError(f"No SAE activations collected for language {lan} at layer {layer}.")
+        avg_act_per_lan.append((running_sum / total_tokens).unsqueeze(0))
     avg_act_per_lan = torch.cat(avg_act_per_lan)
 
     top_index_per_lan = []

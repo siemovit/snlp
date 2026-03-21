@@ -26,7 +26,14 @@ def window_layers(start_layer: int, k: int, model) -> List[int]:
     return list(range(start_layer, end))
 
 
-def mean_layer_activation_for_texts(model, tokenizer, texts: Iterable[str], layer_idx: int, device: str) -> torch.Tensor:
+def mean_layer_activation_for_texts(
+    model,
+    tokenizer,
+    texts: Iterable[str],
+    layer_idx: int,
+    device: str,
+    progress_callback=None,
+) -> torch.Tensor:
     pooled = []
 
     def hook_fn(_m, _inp, out):
@@ -40,15 +47,30 @@ def mean_layer_activation_for_texts(model, tokenizer, texts: Iterable[str], laye
             for text in texts:
                 ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
                 _ = model(ids)
+                if progress_callback is not None:
+                    progress_callback()
     finally:
         handle.remove()
 
     return torch.cat(pooled, dim=0).mean(dim=0)
 
 
-def compute_steering_vector(model, tokenizer, pos_texts, neg_texts, layer_idx: int, device: str, normalize: bool = True):
-    pos_mean = mean_layer_activation_for_texts(model, tokenizer, pos_texts, layer_idx, device)
-    neg_mean = mean_layer_activation_for_texts(model, tokenizer, neg_texts, layer_idx, device)
+def compute_steering_vector(
+    model,
+    tokenizer,
+    pos_texts,
+    neg_texts,
+    layer_idx: int,
+    device: str,
+    normalize: bool = True,
+    progress_callback=None,
+):
+    pos_mean = mean_layer_activation_for_texts(
+        model, tokenizer, pos_texts, layer_idx, device, progress_callback=progress_callback
+    )
+    neg_mean = mean_layer_activation_for_texts(
+        model, tokenizer, neg_texts, layer_idx, device, progress_callback=progress_callback
+    )
     vec = (pos_mean - neg_mean).to(device)
     if normalize:
         vec = vec / (vec.norm() + 1e-8)
@@ -141,6 +163,7 @@ def build_sv_bank_and_gates(
     sae_device: str | None = None,
     sae_dtype: torch.dtype | None = None,
     memory_report_fn=None,
+    progress_callback=None,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, object] = {}
@@ -155,6 +178,7 @@ def build_sv_bank_and_gates(
             layer_idx,
             device=device,
             normalize=True,
+            progress_callback=progress_callback,
         )
         sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
         top_idx_layer, _ = compute_top_index_per_lan_for_layer(
@@ -166,6 +190,7 @@ def build_sv_bank_and_gates(
             multilingual_texts,
             device,
             n_texts_per_lan=train_n,
+            progress_callback=progress_callback,
         )
         top2_src = top_idx_layer[source_lang_idx, :2].detach().cpu().tolist()
         gate_bank[layer_idx] = make_sae_gate_fn(sae_layer, top2_src, threshold=0.0)

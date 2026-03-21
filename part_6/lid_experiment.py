@@ -104,6 +104,24 @@ def main():
     by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=split_eval_n, target_langs=TARGET_LANGS)
     multilingual_texts = flatten_language_texts(lang_texts, TARGET_LANGS)
 
+    methods = [
+        ("No SV", 0),
+        ("SV-1L", 1),
+        ("SV-2L", 2),
+        ("SV-3L", 3),
+        ("SAE-1L", 1),
+        ("SAE-2L", 2),
+        ("SAE-3L", 3),
+    ]
+
+    total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (2 * args.train_n + len(TARGET_LANGS) * args.train_n)
+    total_eval_steps = len(methods) * (args.eval_n + (len(TARGET_LANGS) - 1) * other_eval_n)
+    overall_pbar = tqdm.tqdm(total=total_bank_steps + total_eval_steps, desc="LID pipeline", unit="text")
+
+    def step_progress(phase: str):
+        overall_pbar.set_postfix_str(phase)
+        overall_pbar.update(1)
+
     # Build the 1L/2L/3L steering vectors and SAE gates starting from the chosen base layer.
     window = window_layers(args.base_layer, 3, model)
     sv_bank, gate_bank = build_sv_bank_and_gates(
@@ -120,18 +138,9 @@ def main():
         args.train_n,
         sae_device=sae_device,
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
-        memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" else None,
+        # memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" else None,
+        progress_callback=lambda: step_progress("building banks/gates"),
     )
-
-    methods = [
-        ("No SV", 0),
-        ("SV-1L", 1),
-        ("SV-2L", 2),
-        ("SV-3L", 3),
-        ("SAE-1L", 1),
-        ("SAE-2L", 2),
-        ("SAE-3L", 3),
-    ]
 
     # Adversarial LID: steer source-language texts toward the target-language label,
     # and also measure collateral CE on all languages except the original/source one.
@@ -162,23 +171,25 @@ def main():
             ensure_min_free_memory(device, args.min_free_gb, "method evaluation")
 
     rows = []
-    method_pbar = tqdm.tqdm(methods, desc="Evaluating methods")
-    for method_name, k in method_pbar:
-        method_pbar.set_postfix_str(method_name)
+    for method_name, k in methods:
         if device == "cuda":
             print_device_memory_report(device, f"Before method {method_name}")
             ensure_min_free_memory(device, args.min_free_gb, f"method {method_name}")
 
         # Convert the method label into the corresponding stack of steering patches.
         patch_specs = build_patch_specs(method_name, k, args.base_layer, model, sv_bank, gate_bank, alpha=args.alpha)
-        ce_target = [
-            target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
-            for text in eval_source
-        ]
-        ce_other = [
-            target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
-            for text in other_non_target
-        ]
+        ce_target = []
+        for text in eval_source:
+            ce_target.append(
+                target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
+            )
+            step_progress(f"eval {method_name} source")
+        ce_other = []
+        for text in other_non_target:
+            ce_other.append(
+                target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
+            )
+            step_progress(f"eval {method_name} collateral")
         rows.append(
             {
                 "method": method_name,
@@ -189,6 +200,7 @@ def main():
         )
         if device == "cuda":
             print_device_memory_report(device, f"After method {method_name}")
+    overall_pbar.close()
 
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)
