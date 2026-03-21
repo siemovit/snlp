@@ -179,6 +179,7 @@ def build_sv_bank_and_gates(
     progress_callback=None,
     cache_dir: str | Path | None = None,
     cache_metadata: dict | None = None,
+    sae_batch_size: int = 1,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, object] = {}
@@ -234,6 +235,7 @@ def build_sv_bank_and_gates(
                 multilingual_texts,
                 device,
                 n_texts_per_lan=train_n,
+                batch_size=sae_batch_size,
                 progress_callback=progress_callback,
             )
             if top_idx_cache_path is not None:
