@@ -201,6 +201,11 @@ def main():
             ensure_min_free_memory(device, args.min_free_gb, "method evaluation")
 
     rows = []
+    # Progress bar total number of steps is computed as follows:
+    # 1. Bank construction: 2 * train_n for steering vector and 10*train_n for compute_top_index_per_lan_for_layer and for each layer (so x3)
+    # 2. Evaluation: eval_n + 9 * other_eval_n, for each method and there are 7 methods.
+    # 3. Total = bank steps + eval steps, as computed above.
+    
     for method_name, k in methods:
         if device == "cuda":
             if args.verbose_memory:
