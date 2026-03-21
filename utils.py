@@ -53,11 +53,43 @@ def get_safe_default_device() -> str:
     return "cpu"
 
 
-def maybe_empty_device_cache(device: str) -> None:
+def _bytes_to_gb(value: int) -> float:
+    return value / 1024**3
+
+
+def get_device_memory_report(device: str) -> dict | None:
     if device == "cuda" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    if device == "mps" and torch.backends.mps.is_available():
-        torch.mps.empty_cache()
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        return {
+            "free_gb": _bytes_to_gb(free_bytes),
+            "total_gb": _bytes_to_gb(total_bytes),
+            "allocated_gb": _bytes_to_gb(torch.cuda.memory_allocated()),
+            "reserved_gb": _bytes_to_gb(torch.cuda.memory_reserved()),
+            "max_allocated_gb": _bytes_to_gb(torch.cuda.max_memory_allocated()),
+        }
+    return None
+
+
+def print_device_memory_report(device: str, prefix: str) -> None:
+    report = get_device_memory_report(device)
+    if report is None:
+        return
+    print(
+        f"{prefix} | cuda free={report['free_gb']:.2f}GB / {report['total_gb']:.2f}GB total | "
+        f"allocated={report['allocated_gb']:.2f}GB | reserved={report['reserved_gb']:.2f}GB | "
+        f"peak={report['max_allocated_gb']:.2f}GB"
+    )
+
+
+def ensure_min_free_memory(device: str, min_free_gb: float, stage: str) -> None:
+    report = get_device_memory_report(device)
+    if report is None:
+        return
+    if report["free_gb"] < min_free_gb:
+        raise RuntimeError(
+            f"Stopping before {stage}: only {report['free_gb']:.2f}GB CUDA memory free, "
+            f"below threshold {min_free_gb:.2f}GB."
+        )
 
 
 def resolve_torch_dtype(dtype: str, device: str) -> torch.dtype:
@@ -142,7 +174,7 @@ def gather_residual_activations(model, target_layer: int, inputs: torch.Tensor) 
 
     handle = model.model.layers[target_layer].register_forward_hook(gather_target_act_hook)
     try:
-        with torch.inference_mode():
+        with torch.no_grad():
             _ = model.forward(inputs)
     finally:
         handle.remove()
@@ -171,12 +203,10 @@ def compute_top_index_per_lan_for_layer(
         for text in lang_texts:
             inputs = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
             target_act = gather_residual_activations(model, layer, inputs)
-            with torch.inference_mode():
-                sae_act = sae.encode(target_act.to(device=sae_device, dtype=torch.float32)).cpu()
+            sae_act = sae.encode(target_act.to(device=sae_device, dtype=torch.float32)).cpu()
             if sae_act.ndim == 2:
                 sae_act = sae_act.unsqueeze(0)
             activations.append(sae_act)
-            del inputs, target_act, sae_act
         sae_activations_per_language[lan] = activations
 
     avg_act_per_lan = []

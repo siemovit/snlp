@@ -19,12 +19,15 @@ from utils import (
     TARGET_LANGS,
     build_lang_split,
     build_language_texts,
+    ensure_min_free_memory,
     ensure_dir,
     flatten_language_texts,
     get_device,
+    get_device_memory_report,
     get_safe_default_device,
     load_model_and_tokenizer,
     load_multilingual_dataframe,
+    print_device_memory_report,
     repo_root,
     resolve_torch_dtype,
 )
@@ -61,6 +64,12 @@ def parse_args():
     parser.add_argument("--train-n", type=int, default=20, help="Number of source/target samples per language used to build the steering bank.")
     parser.add_argument("--eval-n", type=int, default=5, help="Number of source-language evaluation samples.")
     parser.add_argument(
+        "--min-free-gb",
+        type=float,
+        default=2.0,
+        help="Stop early if available CUDA memory drops below this threshold.",
+    )
+    parser.add_argument(
         "--other-eval-n",
         type=int,
         default=None,
@@ -86,6 +95,10 @@ def main():
 
     # Load the local model and assemble the paper-style per-language split.
     model, tokenizer = load_model_and_tokenizer(args.model_path, device=device, dtype=args.dtype)
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+        print_device_memory_report(device, "After model load")
+        ensure_min_free_memory(device, args.min_free_gb, "SV/gate construction")
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
     by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=split_eval_n, target_langs=TARGET_LANGS)
@@ -107,6 +120,7 @@ def main():
         args.train_n,
         sae_device=sae_device,
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+        memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" else None,
     )
 
     methods = [
@@ -139,11 +153,21 @@ def main():
         f"collateral samples={len(other_non_target)} | "
         f"total prompt evaluations={len(methods) * (len(eval_source) + len(other_non_target))}"
     )
+    if device == "cuda":
+        report = get_device_memory_report(device)
+        if report is not None:
+            # A crude workload estimate: if we are already close to full before evaluation,
+            # stop instead of dying deep in the loop.
+            print_device_memory_report(device, "Before evaluation loop")
+            ensure_min_free_memory(device, args.min_free_gb, "method evaluation")
 
     rows = []
     method_pbar = tqdm.tqdm(methods, desc="Evaluating methods")
     for method_name, k in method_pbar:
         method_pbar.set_postfix_str(method_name)
+        if device == "cuda":
+            print_device_memory_report(device, f"Before method {method_name}")
+            ensure_min_free_memory(device, args.min_free_gb, f"method {method_name}")
 
         # Convert the method label into the corresponding stack of steering patches.
         patch_specs = build_patch_specs(method_name, k, args.base_layer, model, sv_bank, gate_bank, alpha=args.alpha)
@@ -163,6 +187,8 @@ def main():
                 "ce_non_target_langs": float(pd.Series(ce_other).mean()),
             }
         )
+        if device == "cuda":
+            print_device_memory_report(device, f"After method {method_name}")
 
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)

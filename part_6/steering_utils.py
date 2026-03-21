@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from sae_lens import SAE
 
-from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer, maybe_empty_device_cache
+from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer
 
 
 def get_layer_module(model, layer_idx: int):
@@ -36,7 +36,7 @@ def mean_layer_activation_for_texts(model, tokenizer, texts: Iterable[str], laye
 
     handle = get_layer_module(model, layer_idx).register_forward_hook(hook_fn)
     try:
-        with torch.inference_mode():
+        with torch.no_grad():
             for text in texts:
                 ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
                 _ = model(ids)
@@ -52,8 +52,7 @@ def compute_steering_vector(model, tokenizer, pos_texts, neg_texts, layer_idx: i
     vec = (pos_mean - neg_mean).to(device)
     if normalize:
         vec = vec / (vec.norm() + 1e-8)
-    # Keep steering vectors on CPU; hooks move them back to the model device on demand.
-    return vec.cpu()
+    return vec
 
 
 @contextmanager
@@ -141,6 +140,7 @@ def build_sv_bank_and_gates(
     train_n: int,
     sae_device: str | None = None,
     sae_dtype: torch.dtype | None = None,
+    memory_report_fn=None,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, object] = {}
@@ -169,9 +169,8 @@ def build_sv_bank_and_gates(
         )
         top2_src = top_idx_layer[source_lang_idx, :2].detach().cpu().tolist()
         gate_bank[layer_idx] = make_sae_gate_fn(sae_layer, top2_src, threshold=0.0)
-        del top_idx_layer, top2_src, sae_layer
-        maybe_empty_device_cache(device)
-        maybe_empty_device_cache(sae_device or device)
+        if memory_report_fn is not None:
+            memory_report_fn(f"After layer {layer_idx} bank/gate build")
 
     return sv_bank, gate_bank
 
