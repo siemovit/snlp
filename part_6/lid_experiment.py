@@ -67,7 +67,7 @@ def parse_args():
     parser.add_argument(
         "--sae-batch-size",
         type=int,
-        default=100,
+        default=1,
         help="Micro-batch size used only for SAE top-feature computation during gate construction.",
     )
     parser.add_argument(
