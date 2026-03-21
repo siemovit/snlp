@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+import gc
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -110,7 +111,19 @@ def apply_layer_patches(model, patch_specs):
             handle.remove()
 
 
-def build_patch_specs(method_name: str, k: int, base_layer: int, model, sv_bank, gate_bank, alpha: float = 1.0):
+def build_patch_specs(
+    method_name: str,
+    k: int,
+    base_layer: int,
+    model,
+    sv_bank,
+    gate_bank,
+    alpha: float = 1.0,
+    sae_release: str | None = None,
+    sae_device: str | None = None,
+    sae_dtype: torch.dtype | None = None,
+    gate_threshold: float = 0.0,
+):
     if method_name == "No SV":
         return []
 
@@ -118,7 +131,20 @@ def build_patch_specs(method_name: str, k: int, base_layer: int, model, sv_bank,
     for layer_idx in window_layers(base_layer, k, model):
         if layer_idx not in sv_bank:
             continue
-        gate_fn = gate_bank.get(layer_idx) if method_name.startswith("SAE") else None
+        gate_fn = None
+        if method_name.startswith("SAE"):
+            feature_indices = gate_bank.get(layer_idx)
+            if feature_indices is None:
+                continue
+            if sae_release is None:
+                raise ValueError("sae_release is required to build SAE-gated patch specs.")
+            sae = try_load_sae_for_layer(
+                sae_release,
+                layer_idx,
+                sae_device or next(model.parameters()).device.type,
+                dtype=sae_dtype,
+            )
+            gate_fn = make_sae_gate_fn(sae, feature_indices, threshold=gate_threshold)
         specs.append((layer_idx, alpha * sv_bank[layer_idx], gate_fn))
     return specs
 
@@ -179,9 +205,10 @@ def build_sv_bank_and_gates(
     progress_callback=None,
     cache_dir: str | Path | None = None,
     cache_metadata: dict | None = None,
+    gate_topk: int = 2,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
-    gate_bank: Dict[int, object] = {}
+    gate_bank: Dict[int, List[int]] = {}
     source_lang_idx = target_lan.index(source_lang)
     cache_dir = Path(cache_dir) if cache_dir is not None else None
     cache_metadata = cache_metadata or {}
@@ -238,8 +265,13 @@ def build_sv_bank_and_gates(
             )
             if top_idx_cache_path is not None:
                 torch.save(top_idx_layer.detach().cpu(), top_idx_cache_path)
-        top2_src = top_idx_layer[source_lang_idx, :2].detach().cpu().tolist()
-        gate_bank[layer_idx] = make_sae_gate_fn(sae_layer, top2_src, threshold=0.0)
+        topk_src = top_idx_layer[source_lang_idx, :gate_topk].detach().cpu().tolist()
+        gate_bank[layer_idx] = topk_src
+        del top_idx_layer
+        del sae_layer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
         if memory_report_fn is not None:
             memory_report_fn(f"After layer {layer_idx} bank/gate build")
 

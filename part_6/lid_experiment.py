@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -44,6 +45,8 @@ def parse_args():
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=18)
     parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
+    parser.add_argument("--gate-threshold", type=float, default=0.0, help="Activation threshold for SAE gating.")
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
@@ -169,6 +172,7 @@ def main():
             "sae_release": args.sae_release,
             "target_lan": TARGET_LANGS,
         },
+        gate_topk=args.gate_topk,
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
@@ -184,7 +188,8 @@ def main():
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
-        f"device={device}, dtype={args.dtype}, sae_device={sae_device}, cache_dir={cache_dir}"
+        f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
+        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "
@@ -213,7 +218,19 @@ def main():
             ensure_min_free_memory(device, args.min_free_gb, f"method {method_name}")
 
         # Convert the method label into the corresponding stack of steering patches.
-        patch_specs = build_patch_specs(method_name, k, args.base_layer, model, sv_bank, gate_bank, alpha=args.alpha)
+        patch_specs = build_patch_specs(
+            method_name,
+            k,
+            args.base_layer,
+            model,
+            sv_bank,
+            gate_bank,
+            alpha=args.alpha,
+            sae_release=args.sae_release,
+            sae_device=sae_device,
+            sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+            gate_threshold=args.gate_threshold,
+        )
         ce_target = []
         for text in eval_source:
             ce_target.append(
@@ -237,6 +254,9 @@ def main():
         if device == "cuda":
             if args.verbose_memory:
                 print_device_memory_report(device, f"After method {method_name}")
+            torch.cuda.empty_cache()
+        del patch_specs
+        gc.collect()
     overall_pbar.close()
 
     # Save both the raw table and the paper-style scatter plot.

@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--target-lang", default="es")
     parser.add_argument("--layer", type=int, default=18)
     parser.add_argument("--alpha", type=float, default=20.0)
+    parser.add_argument("--gate-topk", type=int, default=2)
+    parser.add_argument("--gate-threshold", type=float, default=0.0)
     parser.add_argument("--train-n", type=int, default=4)
     parser.add_argument("--eval-n", type=int, default=2)
     parser.add_argument("--max-new-tokens", type=int, default=32)
@@ -76,12 +78,24 @@ def main():
         args.sae_release,
         device=device,
         train_n=args.train_n,
+        gate_topk=args.gate_topk,
     )
 
     # Compare the raw steering-vector patch against the SAE-gated version.
     # "specs" is for specifying which patches to apply during generation.
     sv_only_specs = build_patch_specs("SV", 1, args.layer, model, sv_bank, gate_bank, alpha=args.alpha)
-    sae_gated_specs = build_patch_specs("SAE", 1, args.layer, model, sv_bank, gate_bank, alpha=args.alpha)
+    sae_gated_specs = build_patch_specs(
+        "SAE",
+        1,
+        args.layer,
+        model,
+        sv_bank,
+        gate_bank,
+        alpha=args.alpha,
+        sae_release=args.sae_release,
+        sae_device=device,
+        gate_threshold=args.gate_threshold,
+    )
 
     # Generate three continuations: no steering, SV-only steering, and SAE-gated steering.
     # no steering
@@ -146,6 +160,8 @@ def main():
         "target_lang": args.target_lang,
         "layer": args.layer,
         "alpha": args.alpha,
+        "gate_topk": args.gate_topk,
+        "gate_threshold": args.gate_threshold,
         "sae_release": args.sae_release,
         "train_n": args.train_n,
         "eval_n": args.eval_n,
