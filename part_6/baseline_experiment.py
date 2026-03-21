@@ -158,7 +158,8 @@ def main():
         "ce_target_token_sae_gated": ce_sae_gated,
     }
 
-    out_path = results_dir / f"baseline_{args.source_lang}_to_{args.target_lang}.json"
+    run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
+    out_path = results_dir / f"baseline_{args.source_lang}_to_{args.target_lang}_{run_tag}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False))
 
     print(f"Toy direction: {args.source_lang} -> {args.target_lang} at layer {args.layer} (alpha={args.alpha})")

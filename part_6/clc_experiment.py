@@ -140,8 +140,9 @@ def main():
         )
 
     df = pd.DataFrame(rows)
-    csv_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}.csv"
-    fig_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}.png"
+    run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
+    csv_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     fig, ax1 = plt.subplots(figsize=(9, 5))

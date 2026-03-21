@@ -166,8 +166,11 @@ def main():
 
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)
-    csv_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}.csv"
-    fig_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}.png"
+    run_tag = (
+        f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
+    )
+    csv_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     # Match the notebook/paper convention: SAE in green, SV in blue, No SV in red.
