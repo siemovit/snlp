@@ -4,6 +4,7 @@ import argparse
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import torch
 import tqdm
 
 from part_6.steering_utils import (
@@ -25,6 +26,7 @@ from utils import (
     load_model_and_tokenizer,
     load_multilingual_dataframe,
     repo_root,
+    resolve_torch_dtype,
 )
 
 
@@ -44,6 +46,18 @@ def parse_args():
         default="auto",
         help="Execution device. 'auto' defaults to CPU on macOS to avoid MPS graph crashes.",
     )
+    parser.add_argument(
+        "--dtype",
+        choices=["auto", "float32", "float16", "bfloat16"],
+        default="auto",
+        help="Model dtype. 'auto' defaults to bfloat16 on CUDA and float32 otherwise.",
+    )
+    parser.add_argument(
+        "--sae-device",
+        choices=["cpu", "mps", "cuda", "same"],
+        default="cpu",
+        help="Where to keep SAE gates. 'cpu' is safer on small GPUs; 'same' follows --device.",
+    )
     parser.add_argument("--train-n", type=int, default=20, help="Number of source/target samples per language used to build the steering bank.")
     parser.add_argument("--eval-n", type=int, default=5, help="Number of source-language evaluation samples.")
     parser.add_argument(
@@ -59,6 +73,8 @@ def main():
     args = parse_args()
     device = get_safe_default_device() if args.device == "auto" else args.device
     available_device = get_device()
+    sae_device = device if args.sae_device == "same" else args.sae_device
+    model_dtype = resolve_torch_dtype(args.dtype, device)
     results_dir = ensure_dir(repo_root() / "results")
     other_eval_n = args.other_eval_n if args.other_eval_n is not None else args.eval_n
     split_eval_n = max(args.eval_n, other_eval_n)
@@ -69,7 +85,7 @@ def main():
         raise ValueError("MPS was requested but is not available on this machine.")
 
     # Load the local model and assemble the paper-style per-language split.
-    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device)
+    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device, dtype=args.dtype)
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
     by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=split_eval_n, target_langs=TARGET_LANGS)
@@ -89,6 +105,8 @@ def main():
         args.sae_release,
         device,
         args.train_n,
+        sae_device=sae_device,
+        sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
     )
 
     methods = [
@@ -113,7 +131,8 @@ def main():
     print(
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
-        f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, device={device}"
+        f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
+        f"device={device}, dtype={args.dtype}, sae_device={sae_device}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "

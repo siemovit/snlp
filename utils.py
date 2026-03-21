@@ -53,10 +53,34 @@ def get_safe_default_device() -> str:
     return "cpu"
 
 
-def load_model_and_tokenizer(model_path: str | Path, device: str = "cpu"):
+def maybe_empty_device_cache(device: str) -> None:
+    if device == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if device == "mps" and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
+def resolve_torch_dtype(dtype: str, device: str) -> torch.dtype:
+    if dtype == "float32":
+        return torch.float32
+    if dtype == "float16":
+        return torch.float16
+    if dtype == "bfloat16":
+        return torch.bfloat16
+    if dtype != "auto":
+        raise ValueError(f"Unsupported dtype: {dtype}")
+
+    if device == "cuda":
+        return torch.bfloat16
+    return torch.float32
+
+
+def load_model_and_tokenizer(model_path: str | Path, device: str = "cpu", dtype: str = "auto"):
+    torch_dtype = resolve_torch_dtype(dtype, device)
     model = AutoModelForCausalLM.from_pretrained(
         str(model_path),
         local_files_only=True,
+        torch_dtype=torch_dtype,
     )
     model = model.to(device)
     model.eval()
@@ -118,7 +142,8 @@ def gather_residual_activations(model, target_layer: int, inputs: torch.Tensor) 
 
     handle = model.model.layers[target_layer].register_forward_hook(gather_target_act_hook)
     try:
-        _ = model.forward(inputs)
+        with torch.inference_mode():
+            _ = model.forward(inputs)
     finally:
         handle.remove()
     if target_act is None:
@@ -142,13 +167,16 @@ def compute_top_index_per_lan_for_layer(
     for i, lan in enumerate(target_lan):
         lang_texts = multilingual_texts[i * block_size : (i + 1) * block_size][:n_texts_per_lan]
         activations = []
+        sae_device = next(sae.parameters()).device
         for text in lang_texts:
             inputs = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
             target_act = gather_residual_activations(model, layer, inputs)
-            sae_act = sae.encode(target_act).cpu()
+            with torch.inference_mode():
+                sae_act = sae.encode(target_act.to(device=sae_device, dtype=torch.float32)).cpu()
             if sae_act.ndim == 2:
                 sae_act = sae_act.unsqueeze(0)
             activations.append(sae_act)
+            del inputs, target_act, sae_act
         sae_activations_per_language[lan] = activations
 
     avg_act_per_lan = []

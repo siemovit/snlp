@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import argparse
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from transformers import pipeline
+
+from part_6.steering_utils import (
+    build_cont_prompt,
+    build_patch_specs,
+    build_sv_bank_and_gates,
+    first_n_words,
+    generate_continuation,
+    lm_ce_loss_on_text,
+    normalize_openlid_label,
+    window_layers,
+)
+from utils import (
+    LANG_CODE_TO_NAME,
+    TARGET_LANGS,
+    build_lang_split,
+    build_language_texts,
+    ensure_dir,
+    flatten_language_texts,
+    get_device,
+    load_model_and_tokenizer,
+    load_multilingual_dataframe,
+    repo_root,
+)
+
+
+def parse_args():
+    root = repo_root()
+    parser = argparse.ArgumentParser(description="Run Cross-Lingual Continuation steering experiments.")
+    parser.add_argument("--model-path", default=str(root / "models" / "qwen3-0.6b"))
+    parser.add_argument("--sae-release", default="mwhanna-qwen3-0.6b-transcoders-lowl0")
+    parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
+    parser.add_argument("--lid-model", default="laurievb/OpenLID-v2")
+    parser.add_argument("--source-lang", default="fr")
+    parser.add_argument("--target-lang", default="en")
+    parser.add_argument("--base-layer", type=int, default=18)
+    parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--train-n", type=int, default=100)
+    parser.add_argument("--eval-n", type=int, default=500)
+    parser.add_argument("--max-new-tokens", type=int, default=48)
+    parser.add_argument("--n-words-for-lid", type=int, default=20)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    device = get_device()
+    results_dir = ensure_dir(repo_root() / "results")
+
+    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device)
+    lid_pipe = pipeline(
+        "text-classification",
+        model=args.lid_model,
+        device=0 if "cuda" in device else -1,
+    )
+
+    data = load_multilingual_dataframe(args.dataset_path)
+    lang_texts = build_language_texts(data, TARGET_LANGS)
+    by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=args.eval_n, target_langs=TARGET_LANGS)
+    multilingual_texts = flatten_language_texts(lang_texts, TARGET_LANGS)
+
+    window = window_layers(args.base_layer, 3, model)
+    sv_bank, gate_bank = build_sv_bank_and_gates(
+        window,
+        model,
+        tokenizer,
+        by_lang[args.target_lang]["train"],
+        by_lang[args.source_lang]["train"],
+        TARGET_LANGS,
+        multilingual_texts,
+        args.source_lang,
+        args.sae_release,
+        device,
+        args.train_n,
+    )
+
+    methods = [
+        ("No SV", 0),
+        ("SV-1L", 1),
+        ("SV-2L", 2),
+        ("SV-3L", 3),
+        ("SAE-1L", 1),
+        ("SAE-2L", 2),
+        ("SAE-3L", 3),
+    ]
+
+    source_eval_texts = by_lang[args.source_lang]["eval"]
+    non_source_texts = []
+    for code in TARGET_LANGS:
+        if code != args.source_lang:
+            non_source_texts.extend(by_lang[code]["eval"])
+
+    rows = []
+    for method_name, k in methods:
+        patch_specs = build_patch_specs(method_name, k, args.base_layer, model, sv_bank, gate_bank, alpha=args.alpha)
+
+        ok = 0
+        total = 0
+        for text in source_eval_texts:
+            prompt = build_cont_prompt(text, LANG_CODE_TO_NAME[args.target_lang])
+            full = generate_continuation(
+                model,
+                tokenizer,
+                prompt,
+                max_new_tokens=args.max_new_tokens,
+                device=device,
+                patch_specs=patch_specs,
+            )
+            continuation = full.split("Continuation:")[-1].strip()
+            continuation_short = first_n_words(continuation, n_words=args.n_words_for_lid)
+            pred = lid_pipe(continuation_short[:1200], truncation=True, top_k=1)
+            if isinstance(pred, list) and pred and isinstance(pred[0], dict):
+                label = pred[0].get("label", "")
+            elif isinstance(pred, list) and pred and isinstance(pred[0], list):
+                label = pred[0][0].get("label", "")
+            else:
+                label = ""
+            ok += int(normalize_openlid_label(label) == args.target_lang)
+            total += 1
+
+        ce_collateral = [
+            lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
+            for text in non_source_texts
+        ]
+
+        rows.append(
+            {
+                "method": method_name,
+                "k": k,
+                "success_rate": ok / max(total, 1),
+                "ce_non_source_flores10": float(pd.Series(ce_collateral).mean()),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    csv_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}.csv"
+    fig_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}.png"
+    df.to_csv(csv_path, index=False)
+
+    fig, ax1 = plt.subplots(figsize=(9, 5))
+    ax2 = ax1.twinx()
+    x = np.arange(len(df))
+    ax1.bar(x - 0.18, df["success_rate"].values, width=0.35, label="Success rate")
+    ax2.bar(x + 0.18, df["ce_non_source_flores10"].values, width=0.35, color="tab:orange", label="CE (non-source)")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(df["method"].values, rotation=30, ha="right")
+    ax1.set_ylabel("Success rate (higher is better)")
+    ax2.set_ylabel("CE on non-source Flores-10 (lower is better)")
+    ax1.set_title(f"Cross-Lingual Continuation: {args.source_lang} -> {args.target_lang}")
+    ax1.grid(True, axis="y", alpha=0.3)
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, loc="upper right")
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=200)
+    plt.close()
+
+    print(df.sort_values(["method"]))
+    print(f"Saved CSV: {csv_path}")
+    print(f"Saved figure: {fig_path}")
+
+
+if __name__ == "__main__":
+    main()

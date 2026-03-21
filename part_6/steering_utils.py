@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from sae_lens import SAE
 
-from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer
+from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer, maybe_empty_device_cache
 
 
 def get_layer_module(model, layer_idx: int):
@@ -36,7 +36,7 @@ def mean_layer_activation_for_texts(model, tokenizer, texts: Iterable[str], laye
 
     handle = get_layer_module(model, layer_idx).register_forward_hook(hook_fn)
     try:
-        with torch.no_grad():
+        with torch.inference_mode():
             for text in texts:
                 ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
                 _ = model(ids)
@@ -52,7 +52,8 @@ def compute_steering_vector(model, tokenizer, pos_texts, neg_texts, layer_idx: i
     vec = (pos_mean - neg_mean).to(device)
     if normalize:
         vec = vec / (vec.norm() + 1e-8)
-    return vec
+    # Keep steering vectors on CPU; hooks move them back to the model device on demand.
+    return vec.cpu()
 
 
 @contextmanager
@@ -98,14 +99,17 @@ def build_patch_specs(method_name: str, k: int, base_layer: int, model, sv_bank,
     return specs
 
 
-def try_load_sae_for_layer(release: str, layer_idx: int, device: str):
+def try_load_sae_for_layer(release: str, layer_idx: int, device: str, dtype: torch.dtype | None = None):
     candidates = [
         f"layer_{layer_idx}",
         f"layer_{layer_idx}/width_16k/canonical",
     ]
     for candidate in candidates:
         try:
-            return SAE.from_pretrained(release, candidate).to(device)
+            sae = SAE.from_pretrained(release, candidate)
+            if dtype is not None:
+                return sae.to(device=device, dtype=dtype)
+            return sae.to(device)
         except Exception:
             continue
     raise ValueError(f"Could not load SAE for layer {layer_idx} from release {release}.")
@@ -113,9 +117,10 @@ def try_load_sae_for_layer(release: str, layer_idx: int, device: str):
 
 def make_sae_gate_fn(sae, feature_indices, threshold: float = 0.0):
     idx = torch.as_tensor(feature_indices, dtype=torch.long)
+    sae_device = next(sae.parameters()).device
 
     def gate_fn(hidden_states):
-        acts = sae.encode(hidden_states.to(torch.float32))
+        acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
         picked = acts[..., idx.to(acts.device)]
         return (picked > threshold).any(dim=-1, keepdim=True).to(hidden_states.dtype)
 
@@ -134,6 +139,8 @@ def build_sv_bank_and_gates(
     release: str,
     device: str,
     train_n: int,
+    sae_device: str | None = None,
+    sae_dtype: torch.dtype | None = None,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, object] = {}
@@ -149,7 +156,7 @@ def build_sv_bank_and_gates(
             device=device,
             normalize=True,
         )
-        sae_layer = try_load_sae_for_layer(release, layer_idx, device)
+        sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
         top_idx_layer, _ = compute_top_index_per_lan_for_layer(
             model,
             tokenizer,
@@ -162,6 +169,9 @@ def build_sv_bank_and_gates(
         )
         top2_src = top_idx_layer[source_lang_idx, :2].detach().cpu().tolist()
         gate_bank[layer_idx] = make_sae_gate_fn(sae_layer, top2_src, threshold=0.0)
+        del top_idx_layer, top2_src, sae_layer
+        maybe_empty_device_cache(device)
+        maybe_empty_device_cache(sae_device or device)
 
     return sv_bank, gate_bank
 
