@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import platform
-from itertools import islice
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -165,23 +164,7 @@ def build_lang_split(
     return split
 
 
-def batched(items: List[str], batch_size: int):
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}.")
-    iterator = iter(items)
-    while True:
-        chunk = list(islice(iterator, batch_size))
-        if not chunk:
-            break
-        yield chunk
-
-
-def gather_residual_activations(
-    model,
-    target_layer: int,
-    inputs: torch.Tensor,
-    attention_mask: torch.Tensor | None = None,
-) -> torch.Tensor:
+def gather_residual_activations(model, target_layer: int, inputs: torch.Tensor) -> torch.Tensor:
     target_act = None
 
     def gather_target_act_hook(_mod, _inputs, outputs):
@@ -192,7 +175,7 @@ def gather_residual_activations(
     handle = model.model.layers[target_layer].register_forward_hook(gather_target_act_hook)
     try:
         with torch.no_grad():
-            _ = model.forward(input_ids=inputs, attention_mask=attention_mask)
+            _ = model.forward(inputs)
     finally:
         handle.remove()
     if target_act is None:
@@ -209,7 +192,6 @@ def compute_top_index_per_lan_for_layer(
     multilingual_texts: List[str],
     device: str,
     n_texts_per_lan: int = 10,
-    batch_size: int = 1,
     progress_callback=None,
 ):
     block_size = len(multilingual_texts) // len(target_lan)
@@ -220,38 +202,21 @@ def compute_top_index_per_lan_for_layer(
         lang_texts = multilingual_texts[i * block_size : (i + 1) * block_size][:n_texts_per_lan]
         running_sum = None
         total_tokens = 0
-        for text_batch in batched(lang_texts, batch_size):
-            if batch_size == 1:
-                inputs = tokenizer.encode(text_batch[0], return_tensors="pt", add_special_tokens=True).to(device)
-                attention_mask = torch.ones_like(inputs)
-            else:
-                if tokenizer.pad_token_id is None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                encoded = tokenizer(
-                    text_batch,
-                    return_tensors="pt",
-                    add_special_tokens=True,
-                    padding=True,
-                    truncation=True,
-                )
-                inputs = encoded["input_ids"].to(device)
-                attention_mask = encoded["attention_mask"].to(device)
-            target_act = gather_residual_activations(model, layer, inputs, attention_mask=attention_mask)
+        for text in lang_texts:
+            inputs = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
+            target_act = gather_residual_activations(model, layer, inputs)
             sae_act = sae.encode(target_act.to(device=sae_device, dtype=torch.float32)).cpu()
             if sae_act.ndim == 2:
                 sae_act = sae_act.unsqueeze(0)
-            mask = attention_mask.unsqueeze(-1).to(dtype=sae_act.dtype).cpu()
-            masked_sae_act = sae_act * mask
-            token_sum = masked_sae_act.sum(dim=1).sum(dim=0)
-            token_count = int(attention_mask.sum().item())
+            token_sum = sae_act.sum(dim=1).sum(dim=0)
+            token_count = sae_act.shape[0] * sae_act.shape[1]
             if running_sum is None:
                 running_sum = token_sum
             else:
                 running_sum = running_sum + token_sum
             total_tokens += token_count
             if progress_callback is not None:
-                for _ in text_batch:
-                    progress_callback()
+                progress_callback()
         if running_sum is None or total_tokens == 0:
             raise ValueError(f"No SAE activations collected for language {lan} at layer {layer}.")
         avg_act_per_lan.append((running_sum / total_tokens).unsqueeze(0))

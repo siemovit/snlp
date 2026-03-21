@@ -65,12 +65,6 @@ def parse_args():
     parser.add_argument("--train-n", type=int, default=20, help="Number of source/target samples per language used to build the steering bank.")
     parser.add_argument("--eval-n", type=int, default=5, help="Number of source-language evaluation samples.")
     parser.add_argument(
-        "--sae-batch-size",
-        type=int,
-        default=1,
-        help="Micro-batch size used only for SAE top-feature computation during gate construction.",
-    )
-    parser.add_argument(
         "--min-free-gb",
         type=float,
         default=2.0,
@@ -175,7 +169,6 @@ def main():
             "sae_release": args.sae_release,
             "target_lan": TARGET_LANGS,
         },
-        sae_batch_size=args.sae_batch_size,
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
@@ -191,8 +184,7 @@ def main():
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
-        f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
-        f"sae_batch_size={args.sae_batch_size}, cache_dir={cache_dir}"
+        f"device={device}, dtype={args.dtype}, sae_device={sae_device}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "
