@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -80,6 +81,16 @@ def parse_args():
         action="store_true",
         help="Print detailed CUDA memory reports during bank construction and method evaluation.",
     )
+    parser.add_argument(
+        "--cache-dir",
+        default=str(root / "cache"),
+        help="Directory used to cache per-layer steering vectors and top-index tensors.",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable loading/saving the local cache for sv_bank and top_idx_layer.",
+    )
     return parser.parse_args()
 
 
@@ -92,6 +103,7 @@ def main():
     results_dir = ensure_dir(repo_root() / "results")
     other_eval_n = args.other_eval_n if args.other_eval_n is not None else args.eval_n
     split_eval_n = max(args.eval_n, other_eval_n)
+    cache_dir = None if args.no_cache else Path(args.cache_dir)
 
     if device == "cuda" and available_device != "cuda":
         raise ValueError("CUDA was requested but is not available on this machine.")
@@ -146,6 +158,17 @@ def main():
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
         memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" and args.verbose_memory else None,
         progress_callback=lambda: step_progress("building banks/gates"),
+        cache_dir=cache_dir,
+        cache_metadata={
+            "model_path": str(Path(args.model_path).resolve()),
+            "dataset_path": str(Path(args.dataset_path).resolve()),
+            "source_lang": args.source_lang,
+            "target_lang": args.target_lang,
+            "base_layer": args.base_layer,
+            "train_n": args.train_n,
+            "sae_release": args.sae_release,
+            "target_lan": TARGET_LANGS,
+        },
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
@@ -161,7 +184,7 @@ def main():
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
-        f"device={device}, dtype={args.dtype}, sae_device={sae_device}"
+        f"device={device}, dtype={args.dtype}, sae_device={sae_device}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "

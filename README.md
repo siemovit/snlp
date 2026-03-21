@@ -21,7 +21,7 @@ Shared notebook logic was moved into:
 - `part_6/steering_utils.py`: steering, gating, prompting, CE evaluation, and generation helpers
 - `download.py`: downloads the default base model
 
-Data lives in `data/`, and generated CSV/PNG outputs are written to `results/`.
+Data lives in `data/`, generated CSV/PNG outputs are written to `results/`, and reusable local artifacts are stored in `cache/`.
 
 ## Repository Layout
 
@@ -135,7 +135,7 @@ uv run python -m part_6.baseline_experiment \
 
 Output:
 
-- `results/baseline_fr_to_es.json`
+- `results/baseline_fr_to_es_alpha20_train4_eval2.json`
 
 ### Adversarial Language Identification
 
@@ -150,8 +150,8 @@ uv run python -m part_6.lid_experiment \
 
 Outputs:
 
-- `results/lid_fr_to_en.csv`
-- `results/lid_fr_to_en.png`
+- `results/lid_fr_to_en_alpha10_train20_eval5_other5.csv`
+- `results/lid_fr_to_en_alpha10_train20_eval5_other5.png`
 
 For a larger paper-style run, pass the larger dataset explicitly and increase the sample counts:
 
@@ -162,6 +162,12 @@ uv run python -m part_6.lid_experiment \
   --eval-n 500 \
   --other-eval-n 500 \
   --device cpu
+```
+
+`lid_experiment.py` caches per-layer `sv_bank` and `top_idx_layer` tensors under `cache/` by default. Disable that behavior with:
+
+```bash
+uv run python -m part_6.lid_experiment --no-cache
 ```
 
 ### Cross-Lingual Continuation
@@ -176,8 +182,8 @@ uv run python -m part_6.clc_experiment \
 
 Outputs:
 
-- `results/clc_fr_to_en.csv`
-- `results/clc_fr_to_en.png`
+- `results/clc_fr_to_en_alpha10_train20_eval5.csv`
+- `results/clc_fr_to_en_alpha10_train20_eval5.png`
 
 ## Notes
 

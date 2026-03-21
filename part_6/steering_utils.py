@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
@@ -148,6 +151,16 @@ def make_sae_gate_fn(sae, feature_indices, threshold: float = 0.0):
     return gate_fn
 
 
+def _stable_cache_key(kind: str, cache_metadata: dict, layer_idx: int) -> str:
+    payload = {"kind": kind, "layer_idx": layer_idx, **cache_metadata}
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _cache_file(cache_dir: Path, kind: str, cache_key: str, layer_idx: int) -> Path:
+    return cache_dir / kind / f"{kind}_layer{layer_idx}_{cache_key}.pt"
+
+
 def build_sv_bank_and_gates(
     window_layers_to_use: Iterable[int],
     model,
@@ -164,34 +177,67 @@ def build_sv_bank_and_gates(
     sae_dtype: torch.dtype | None = None,
     memory_report_fn=None,
     progress_callback=None,
+    cache_dir: str | Path | None = None,
+    cache_metadata: dict | None = None,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, object] = {}
     source_lang_idx = target_lan.index(source_lang)
+    cache_dir = Path(cache_dir) if cache_dir is not None else None
+    cache_metadata = cache_metadata or {}
+
+    if cache_dir is not None:
+        (cache_dir / "sv").mkdir(parents=True, exist_ok=True)
+        (cache_dir / "top_idx").mkdir(parents=True, exist_ok=True)
 
     for layer_idx in window_layers_to_use:
-        sv_bank[layer_idx] = compute_steering_vector(
-            model,
-            tokenizer,
-            pos_texts,
-            neg_texts,
-            layer_idx,
-            device=device,
-            normalize=True,
-            progress_callback=progress_callback,
-        )
+        sv_cache_path = None
+        top_idx_cache_path = None
+        if cache_dir is not None:
+            sv_cache_path = _cache_file(cache_dir, "sv", _stable_cache_key("sv", cache_metadata, layer_idx), layer_idx)
+            top_idx_cache_path = _cache_file(
+                cache_dir, "top_idx", _stable_cache_key("top_idx", cache_metadata, layer_idx), layer_idx
+            )
+
+        if sv_cache_path is not None and sv_cache_path.exists():
+            sv_bank[layer_idx] = torch.load(sv_cache_path, map_location="cpu", weights_only=True).to(device)
+            if progress_callback is not None:
+                for _ in range(len(pos_texts) + len(neg_texts)):
+                    progress_callback()
+        else:
+            sv_bank[layer_idx] = compute_steering_vector(
+                model,
+                tokenizer,
+                pos_texts,
+                neg_texts,
+                layer_idx,
+                device=device,
+                normalize=True,
+                progress_callback=progress_callback,
+            )
+            if sv_cache_path is not None:
+                torch.save(sv_bank[layer_idx].detach().cpu(), sv_cache_path)
+
         sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
-        top_idx_layer, _ = compute_top_index_per_lan_for_layer(
-            model,
-            tokenizer,
-            sae_layer,
-            layer_idx,
-            target_lan,
-            multilingual_texts,
-            device,
-            n_texts_per_lan=train_n,
-            progress_callback=progress_callback,
-        )
+        if top_idx_cache_path is not None and top_idx_cache_path.exists():
+            top_idx_layer = torch.load(top_idx_cache_path, map_location="cpu", weights_only=True)
+            if progress_callback is not None:
+                for _ in range(len(target_lan) * train_n):
+                    progress_callback()
+        else:
+            top_idx_layer, _ = compute_top_index_per_lan_for_layer(
+                model,
+                tokenizer,
+                sae_layer,
+                layer_idx,
+                target_lan,
+                multilingual_texts,
+                device,
+                n_texts_per_lan=train_n,
+                progress_callback=progress_callback,
+            )
+            if top_idx_cache_path is not None:
+                torch.save(top_idx_layer.detach().cpu(), top_idx_cache_path)
         top2_src = top_idx_layer[source_lang_idx, :2].detach().cpu().tolist()
         gate_bank[layer_idx] = make_sae_gate_fn(sae_layer, top2_src, threshold=0.0)
         if memory_report_fn is not None:
