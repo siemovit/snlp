@@ -75,6 +75,11 @@ def parse_args():
         default=None,
         help="Optional cap for collateral evaluation samples per non-source language. Defaults to --eval-n.",
     )
+    parser.add_argument(
+        "--verbose-memory",
+        action="store_true",
+        help="Print detailed CUDA memory reports during bank construction and method evaluation.",
+    )
     return parser.parse_args()
 
 
@@ -97,7 +102,8 @@ def main():
     model, tokenizer = load_model_and_tokenizer(args.model_path, device=device, dtype=args.dtype)
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-        print_device_memory_report(device, "After model load")
+        if args.verbose_memory:
+            print_device_memory_report(device, "After model load")
         ensure_min_free_memory(device, args.min_free_gb, "SV/gate construction")
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
@@ -138,7 +144,7 @@ def main():
         args.train_n,
         sae_device=sae_device,
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
-        # memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" else None,
+        memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" and args.verbose_memory else None,
         progress_callback=lambda: step_progress("building banks/gates"),
     )
 
@@ -167,13 +173,15 @@ def main():
         if report is not None:
             # A crude workload estimate: if we are already close to full before evaluation,
             # stop instead of dying deep in the loop.
-            print_device_memory_report(device, "Before evaluation loop")
+            if args.verbose_memory:
+                print_device_memory_report(device, "Before evaluation loop")
             ensure_min_free_memory(device, args.min_free_gb, "method evaluation")
 
     rows = []
     for method_name, k in methods:
         if device == "cuda":
-            print_device_memory_report(device, f"Before method {method_name}")
+            if args.verbose_memory:
+                print_device_memory_report(device, f"Before method {method_name}")
             ensure_min_free_memory(device, args.min_free_gb, f"method {method_name}")
 
         # Convert the method label into the corresponding stack of steering patches.
@@ -199,7 +207,8 @@ def main():
             }
         )
         if device == "cuda":
-            print_device_memory_report(device, f"After method {method_name}")
+            if args.verbose_memory:
+                print_device_memory_report(device, f"After method {method_name}")
     overall_pbar.close()
 
     # Save both the raw table and the paper-style scatter plot.
