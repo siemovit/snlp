@@ -5,13 +5,16 @@ import json
 import math
 import random
 import gc
+import re
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from huggingface_hub import HfApi
 from sae_lens import SAE
 
 from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer
@@ -149,11 +152,47 @@ def build_patch_specs(
     return specs
 
 
+@lru_cache(maxsize=None)
+def _list_repo_files_cached(repo_id: str) -> Tuple[str, ...]:
+    return tuple(HfApi().list_repo_files(repo_id=repo_id, repo_type="model"))
+
+
+def _gemma_repo_id_for_release(release: str) -> str:
+    if "/" in release:
+        return release
+    return f"google/{release}"
+
+
+def _sort_gemma_sae_id(sae_id: str) -> tuple[int, int]:
+    width_match = re.search(r"/width_(\d+)k/", sae_id)
+    width = int(width_match.group(1)) if width_match else 10**9
+    l0_match = re.search(r"/average_l0_(\d+)$", sae_id)
+    l0_value = int(l0_match.group(1)) if l0_match else 10**9
+    return width, l0_value
+
+
+@lru_cache(maxsize=None)
+def _discover_gemma_sae_ids(release: str, layer_idx: int) -> Tuple[str, ...]:
+    repo_id = _gemma_repo_id_for_release(release)
+    prefix = f"layer_{layer_idx}/"
+    candidates = set()
+    for path in _list_repo_files_cached(repo_id):
+        if not path.startswith(prefix):
+            continue
+        if not path.endswith("params.npz"):
+            continue
+        candidates.add(path.rsplit("/", 1)[0])
+    return tuple(sorted(candidates, key=_sort_gemma_sae_id))
+
+
 def try_load_sae_for_layer(release: str, layer_idx: int, device: str, dtype: torch.dtype | None = None):
-    candidates = [
-        f"layer_{layer_idx}",
-        f"layer_{layer_idx}/width_16k/canonical",
-    ]
+    if "gemma-scope" in release:
+        candidates = list(_discover_gemma_sae_ids(release, layer_idx))
+    else:
+        candidates = [
+            f"layer_{layer_idx}",
+            f"layer_{layer_idx}/width_16k/canonical",
+        ]
     for candidate in candidates:
         try:
             sae = SAE.from_pretrained(release, candidate)

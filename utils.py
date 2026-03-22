@@ -36,7 +36,7 @@ MODEL_PRESETS = {
         "label": "gemma-2-2b",
         "repo_id": "google/gemma-2-2b",
         "model_dir": "gemma-2-2b",
-        "sae_release": "google/gemma-scope-2b-pt-res",
+        "sae_release": "gemma-scope-2b-pt-res",
     },
 }
 
