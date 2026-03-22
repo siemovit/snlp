@@ -18,6 +18,7 @@ from part_6.steering_utils import (
 )
 from utils import (
     LANG_CODE_TO_NAME,
+    MODEL_PRESETS,
     TARGET_LANGS,
     build_lang_split,
     build_language_texts,
@@ -29,8 +30,10 @@ from utils import (
     get_safe_default_device,
     load_model_and_tokenizer,
     load_multilingual_dataframe,
+    model_tag,
     print_device_memory_report,
     repo_root,
+    resolve_model_artifacts,
     resolve_torch_dtype,
 )
 
@@ -38,8 +41,9 @@ from utils import (
 def parse_args():
     root = repo_root()
     parser = argparse.ArgumentParser(description="Run Adversarial LID steering experiments.")
-    parser.add_argument("--model-path", default=str(root / "models" / "qwen3-0.6b"))
-    parser.add_argument("--sae-release", default="mwhanna-qwen3-0.6b-transcoders-lowl0")
+    parser.add_argument("--model-name", choices=sorted(MODEL_PRESETS), default="qwen")
+    parser.add_argument("--model-path", default=None)
+    parser.add_argument("--sae-release", default=None)
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data.jsonl"))
     parser.add_argument("--source-lang", default="fr")
     parser.add_argument("--target-lang", default="en")
@@ -99,6 +103,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    model_label, model_path, sae_release = resolve_model_artifacts(
+        repo_root(), args.model_name, args.model_path, args.sae_release
+    )
+    model_file_tag = model_tag(args.model_name, model_path)
     device = get_safe_default_device() if args.device == "auto" else args.device
     available_device = get_device()
     sae_device = device if args.sae_device == "same" else args.sae_device
@@ -114,7 +122,7 @@ def main():
         raise ValueError("MPS was requested but is not available on this machine.")
 
     # Load the local model and assemble the paper-style per-language split.
-    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device, dtype=args.dtype)
+    model, tokenizer = load_model_and_tokenizer(model_path, device=device, dtype=args.dtype)
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
         if args.verbose_memory:
@@ -154,7 +162,7 @@ def main():
         TARGET_LANGS,
         multilingual_texts,
         args.source_lang,
-        args.sae_release,
+        sae_release,
         device,
         args.train_n,
         sae_device=sae_device,
@@ -163,13 +171,13 @@ def main():
         progress_callback=lambda: step_progress("building banks/gates"),
         cache_dir=cache_dir,
         cache_metadata={
-            "model_path": str(Path(args.model_path).resolve()),
+            "model_path": str(Path(model_path).resolve()),
             "dataset_path": str(Path(args.dataset_path).resolve()),
             "source_lang": args.source_lang,
             "target_lang": args.target_lang,
             "base_layer": args.base_layer,
             "train_n": args.train_n,
-            "sae_release": args.sae_release,
+            "sae_release": sae_release,
             "target_lan": TARGET_LANGS,
         },
         gate_topk=args.gate_topk,
@@ -188,6 +196,7 @@ def main():
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
+        f"model={model_label}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
         f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
     )
@@ -226,7 +235,7 @@ def main():
             sv_bank,
             gate_bank,
             alpha=args.alpha,
-            sae_release=args.sae_release,
+            sae_release=sae_release,
             sae_device=sae_device,
             sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
             gate_threshold=args.gate_threshold,
@@ -264,8 +273,8 @@ def main():
     run_tag = (
         f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
     )
-    csv_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = results_dir / f"lid_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    csv_path = results_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = results_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     # Match the notebook/paper convention: SAE in green, SV in blue, No SV in red.
@@ -283,7 +292,7 @@ def main():
         plt.text(row["ce_non_target_langs"] + 0.01, row["ce_target_token"] + 0.01, row["method"], fontsize=9)
     plt.xlabel(f"CE loss on Flores-10 without {LANG_CODE_TO_NAME[args.source_lang]}")
     plt.ylabel(f"CE loss for target token ({target_word})")
-    plt.title(f"Adversarial LID: {args.source_lang} -> {args.target_lang}")
+    plt.title(f"Adversarial LID ({model_label}): {args.source_lang} -> {args.target_lang}")
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()

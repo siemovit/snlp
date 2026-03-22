@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -24,6 +25,21 @@ LANG_CODE_TO_NAME = {
     "ar": "Arabic",
 }
 
+MODEL_PRESETS = {
+    "qwen": {
+        "label": "Qwen3-0.6B",
+        "repo_id": "Qwen/Qwen3-0.6B",
+        "model_dir": "qwen3-0.6b",
+        "sae_release": "mwhanna-qwen3-0.6b-transcoders-lowl0",
+    },
+    "gemma-2-2b": {
+        "label": "gemma-2-2b",
+        "repo_id": "google/gemma-2-2b",
+        "model_dir": "gemma-2-2b",
+        "sae_release": "google/gemma-scope-2b-pt-res",
+    },
+}
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent
@@ -33,6 +49,28 @@ def ensure_dir(path: Path | str) -> Path:
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def resolve_model_artifacts(
+    root: Path,
+    model_name: str,
+    model_path: str | None = None,
+    sae_release: str | None = None,
+) -> tuple[str, str, str]:
+    if model_name not in MODEL_PRESETS:
+        raise ValueError(f"Unsupported model_name: {model_name}. Expected one of {sorted(MODEL_PRESETS)}.")
+    preset = MODEL_PRESETS[model_name]
+    resolved_model_path = model_path or str(root / "models" / preset["model_dir"])
+    resolved_sae_release = sae_release or preset["sae_release"]
+    return preset["label"], resolved_model_path, resolved_sae_release
+
+
+def model_tag(model_name: str, model_path: str) -> str:
+    if model_name in MODEL_PRESETS:
+        return MODEL_PRESETS[model_name]["model_dir"]
+    candidate = Path(model_path).name.strip().lower()
+    candidate = re.sub(r"[^a-z0-9._-]+", "-", candidate)
+    return candidate or "model"
 
 
 def get_device() -> str:
@@ -217,9 +255,14 @@ def compute_top_index_per_lan_for_layer(
             total_tokens += token_count
             if progress_callback is not None:
                 progress_callback()
+            del inputs
+            del target_act
+            del sae_act
+            del token_sum
         if running_sum is None or total_tokens == 0:
             raise ValueError(f"No SAE activations collected for language {lan} at layer {layer}.")
         avg_act_per_lan.append((running_sum / total_tokens).unsqueeze(0))
+        del running_sum
     avg_act_per_lan = torch.cat(avg_act_per_lan)
 
     top_index_per_lan = []

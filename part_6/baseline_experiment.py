@@ -10,6 +10,7 @@ from part_6.steering_utils import (
 )
 from utils import (
     LANG_CODE_TO_NAME,
+    MODEL_PRESETS,
     TARGET_LANGS,
     build_lang_split,
     build_language_texts,
@@ -18,16 +19,19 @@ from utils import (
     get_device,
     load_model_and_tokenizer,
     load_multilingual_dataframe,
+    model_tag,
     repo_root,
+    resolve_model_artifacts,
 )
 
 
 def parse_args():
     root = repo_root()
     parser = argparse.ArgumentParser(description="Run the baseline one-layer steering demo.")
-    parser.add_argument("--model-path", default=str(root / "models" / "qwen3-0.6b"))
+    parser.add_argument("--model-name", choices=sorted(MODEL_PRESETS), default="qwen")
+    parser.add_argument("--model-path", default=None)
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data.jsonl"))
-    parser.add_argument("--sae-release", default="mwhanna-qwen3-0.6b-transcoders-lowl0")
+    parser.add_argument("--sae-release", default=None)
     parser.add_argument("--source-lang", default="fr")
     parser.add_argument("--target-lang", default="es")
     parser.add_argument("--layer", type=int, default=18)
@@ -42,11 +46,15 @@ def parse_args():
 
 def main():
     args = parse_args()
+    model_label, model_path, sae_release = resolve_model_artifacts(
+        repo_root(), args.model_name, args.model_path, args.sae_release
+    )
+    model_file_tag = model_tag(args.model_name, model_path)
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
 
     # Load the local model and the small multilingual dataset used for the toy demo.
-    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device)
+    model, tokenizer = load_model_and_tokenizer(model_path, device=device)
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
     by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=args.eval_n, target_langs=TARGET_LANGS)
@@ -75,7 +83,7 @@ def main():
         TARGET_LANGS,
         multilingual_texts,
         args.source_lang,
-        args.sae_release,
+        sae_release,
         device=device,
         train_n=args.train_n,
         gate_topk=args.gate_topk,
@@ -92,7 +100,7 @@ def main():
         sv_bank,
         gate_bank,
         alpha=args.alpha,
-        sae_release=args.sae_release,
+        sae_release=sae_release,
         sae_device=device,
         gate_threshold=args.gate_threshold,
     )
@@ -158,11 +166,13 @@ def main():
     result = {
         "source_lang": args.source_lang,
         "target_lang": args.target_lang,
+        "model_name": model_label,
+        "model_path": model_path,
         "layer": args.layer,
         "alpha": args.alpha,
         "gate_topk": args.gate_topk,
         "gate_threshold": args.gate_threshold,
-        "sae_release": args.sae_release,
+        "sae_release": sae_release,
         "train_n": args.train_n,
         "eval_n": args.eval_n,
         "prompt": prompt,
@@ -175,10 +185,10 @@ def main():
     }
 
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
-    out_path = results_dir / f"baseline_{args.source_lang}_to_{args.target_lang}_{run_tag}.json"
+    out_path = results_dir / f"baseline_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False))
 
-    print(f"Toy direction: {args.source_lang} -> {args.target_lang} at layer {args.layer} (alpha={args.alpha})")
+    print(f"Toy direction ({model_label}): {args.source_lang} -> {args.target_lang} at layer {args.layer} (alpha={args.alpha})")
     print("\nPrompt:\n", prompt)
     print("\nBaseline continuation:\n", baseline)
     print("\nSV-only continuation:\n", steered)

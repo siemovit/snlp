@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import gc
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import torch
 from transformers import pipeline
 
 from part_6.steering_utils import (
@@ -19,6 +21,7 @@ from part_6.steering_utils import (
 )
 from utils import (
     LANG_CODE_TO_NAME,
+    MODEL_PRESETS,
     TARGET_LANGS,
     build_lang_split,
     build_language_texts,
@@ -27,21 +30,26 @@ from utils import (
     get_device,
     load_model_and_tokenizer,
     load_multilingual_dataframe,
+    model_tag,
     repo_root,
+    resolve_model_artifacts,
 )
 
 
 def parse_args():
     root = repo_root()
     parser = argparse.ArgumentParser(description="Run Cross-Lingual Continuation steering experiments.")
-    parser.add_argument("--model-path", default=str(root / "models" / "qwen3-0.6b"))
-    parser.add_argument("--sae-release", default="mwhanna-qwen3-0.6b-transcoders-lowl0")
+    parser.add_argument("--model-name", choices=sorted(MODEL_PRESETS), default="qwen")
+    parser.add_argument("--model-path", default=None)
+    parser.add_argument("--sae-release", default=None)
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
     parser.add_argument("--lid-model", default="laurievb/OpenLID-v2")
     parser.add_argument("--source-lang", default="fr")
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=18)
     parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--gate-topk", type=int, default=2)
+    parser.add_argument("--gate-threshold", type=float, default=0.0)
     parser.add_argument("--train-n", type=int, default=100)
     parser.add_argument("--eval-n", type=int, default=500)
     parser.add_argument("--max-new-tokens", type=int, default=48)
@@ -51,10 +59,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    model_label, model_path, sae_release = resolve_model_artifacts(
+        repo_root(), args.model_name, args.model_path, args.sae_release
+    )
+    model_file_tag = model_tag(args.model_name, model_path)
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
 
-    model, tokenizer = load_model_and_tokenizer(args.model_path, device=device)
+    model, tokenizer = load_model_and_tokenizer(model_path, device=device)
     lid_pipe = pipeline(
         "text-classification",
         model=args.lid_model,
@@ -76,9 +88,10 @@ def main():
         TARGET_LANGS,
         multilingual_texts,
         args.source_lang,
-        args.sae_release,
+        sae_release,
         device,
         args.train_n,
+        gate_topk=args.gate_topk,
     )
 
     methods = [
@@ -99,7 +112,19 @@ def main():
 
     rows = []
     for method_name, k in methods:
-        patch_specs = build_patch_specs(method_name, k, args.base_layer, model, sv_bank, gate_bank, alpha=args.alpha)
+        patch_specs = build_patch_specs(
+            method_name,
+            k,
+            args.base_layer,
+            model,
+            sv_bank,
+            gate_bank,
+            alpha=args.alpha,
+            sae_release=sae_release,
+            sae_device=device,
+            sae_dtype=next(model.parameters()).dtype if device != "cpu" else torch.float32,
+            gate_threshold=args.gate_threshold,
+        )
 
         ok = 0
         total = 0
@@ -138,11 +163,15 @@ def main():
                 "ce_non_source_flores10": float(pd.Series(ce_collateral).mean()),
             }
         )
+        del patch_specs
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
     df = pd.DataFrame(rows)
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
-    csv_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = results_dir / f"clc_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    csv_path = results_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = results_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     fig, ax1 = plt.subplots(figsize=(9, 5))
@@ -154,7 +183,7 @@ def main():
     ax1.set_xticklabels(df["method"].values, rotation=30, ha="right")
     ax1.set_ylabel("Success rate (higher is better)")
     ax2.set_ylabel("CE on non-source Flores-10 (lower is better)")
-    ax1.set_title(f"Cross-Lingual Continuation: {args.source_lang} -> {args.target_lang}")
+    ax1.set_title(f"Cross-Lingual Continuation ({model_label}): {args.source_lang} -> {args.target_lang}")
     ax1.grid(True, axis="y", alpha=0.3)
     h1, l1 = ax1.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
