@@ -192,8 +192,10 @@ def main():
     target_word = LANG_CODE_TO_NAME[args.target_lang]
     eval_source = by_lang[args.source_lang]["eval"][: args.eval_n]
     other_non_target = []
+    
     for code in TARGET_LANGS:
-        if code != args.source_lang:
+        # Exclude source A and target B from collateral 
+        if code != args.source_lang or args.target_lang:
             other_non_target.extend(by_lang[code]["eval"][:other_eval_n])
 
     print(
