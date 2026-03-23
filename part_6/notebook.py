@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
 
 from part_6.steering_utils import (
     build_patch_specs,
@@ -190,7 +191,12 @@ def main():
     plt.ylabel(f"CE loss for target token ({target_word})")
     plt.title(f"Adversarial LID ({model_label}, notebook): {args.source_lang} -> {args.target_lang}")
     plt.grid(True, alpha=0.3)
-    plt.legend()
+    legend_handles = [
+        Line2D([0], [0], color="green", marker="o", linewidth=1.6, label="SAE"),
+        Line2D([0], [0], color="blue", marker="s", linewidth=1.6, label="SV"),
+        Line2D([0], [0], color="red", marker="D", linestyle="None", markersize=8, label="No SV"),
+    ]
+    plt.legend(handles=legend_handles)
     plt.tight_layout()
     plt.savefig(fig_path, dpi=200)
     plt.close()
