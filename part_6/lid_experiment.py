@@ -51,6 +51,8 @@ def parse_args():
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=18)
     parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--normalize-sv", dest="normalize_sv", action="store_true", help="L2-normalize steering vectors before scaling by alpha.")
+    parser.add_argument("--no-normalize-sv", dest="normalize_sv", action="store_false", help="Do not L2-normalize steering vectors before scaling by alpha.")
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
     parser.add_argument("--gate-threshold", type=float, default=0.0, help="Activation threshold for SAE gating.")
     parser.add_argument(
@@ -100,6 +102,7 @@ def parse_args():
         action="store_true",
         help="Disable loading/saving the local cache for sv_bank and top_idx_layer.",
     )
+    parser.set_defaults(normalize_sv=False)
     return parser.parse_args()
 
 
@@ -183,8 +186,10 @@ def main():
             "train_n": args.train_n,
             "sae_release": sae_release,
             "target_lan": TARGET_LANGS,
+            "normalize_sv": args.normalize_sv,
         },
         gate_topk=args.gate_topk,
+        normalize_sv=args.normalize_sv,
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
@@ -204,7 +209,8 @@ def main():
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
         f"model={model_label}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
-        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
+        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, "
+        f"normalize_sv={args.normalize_sv}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "
@@ -277,7 +283,7 @@ def main():
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)
     run_tag = (
-        f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
+        f"alpha{args.alpha:g}_norm{int(args.normalize_sv)}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
     )
     csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"

@@ -245,6 +245,7 @@ def build_sv_bank_and_gates(
     cache_dir: str | Path | None = None,
     cache_metadata: dict | None = None,
     gate_topk: int = 2,
+    normalize_sv: bool = True,
 ):
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, List[int]] = {}
@@ -278,7 +279,7 @@ def build_sv_bank_and_gates(
                 neg_texts,
                 layer_idx,
                 device=device,
-                normalize=True,
+                normalize=normalize_sv,
                 progress_callback=progress_callback,
             )
             if sv_cache_path is not None:

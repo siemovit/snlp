@@ -54,6 +54,8 @@ def parse_args():
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=18)
     parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--normalize-sv", dest="normalize_sv", action="store_true")
+    parser.add_argument("--no-normalize-sv", dest="normalize_sv", action="store_false")
     parser.add_argument("--train-n", type=int, default=20)
     parser.add_argument("--eval-n", type=int, default=5)
     parser.add_argument("--gate-topk", type=int, default=2)
@@ -64,6 +66,7 @@ def parse_args():
         default="auto",
         help="Use 'mps' to match the notebook if you are on Apple Silicon.",
     )
+    parser.set_defaults(normalize_sv=False)
     return parser.parse_args()
 
 
@@ -113,6 +116,7 @@ def main():
         device=device,
         train_n=args.train_n,
         gate_topk=args.gate_topk,
+        normalize_sv=args.normalize_sv,
     )
 
     methods = [
@@ -176,7 +180,7 @@ def main():
     sv_df = plot_df[plot_df["method"].str.startswith("SV")].sort_values("k")
     no_sv_df = plot_df[plot_df["method"] == "No SV"]
 
-    run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
+    run_tag = f"alpha{args.alpha:g}_norm{int(args.normalize_sv)}_train{args.train_n}_eval{args.eval_n}"
     csv_path = csv_dir / f"notebook_lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
     fig_path = plots_dir / f"notebook_lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     lid_df.to_csv(csv_path, index=False)
