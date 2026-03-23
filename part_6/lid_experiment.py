@@ -13,6 +13,7 @@ from part_6.steering_utils import (
     build_lid_prompt,
     build_patch_specs,
     build_sv_bank_and_gates,
+    lm_ce_loss_on_text,
     target_token_ce_from_prompt,
     window_layers,
 )
@@ -251,7 +252,7 @@ def main():
         ce_other = []
         for text in other_non_target:
             ce_other.append(
-                target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
+                lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
             )
             step_progress(f"eval {method_name} collateral")
         rows.append(
