@@ -112,6 +112,8 @@ def main():
     sae_device = device if args.sae_device == "same" else args.sae_device
     model_dtype = resolve_torch_dtype(args.dtype, device)
     results_dir = ensure_dir(repo_root() / "results")
+    csv_dir = ensure_dir(results_dir / "csv")
+    plots_dir = ensure_dir(results_dir / "plots")
     other_eval_n = args.other_eval_n if args.other_eval_n is not None else args.eval_n
     split_eval_n = max(args.eval_n, other_eval_n)
     cache_dir = None if args.no_cache else Path(args.cache_dir)
@@ -273,8 +275,8 @@ def main():
     run_tag = (
         f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
     )
-    csv_path = results_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = results_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     # Match the notebook/paper convention: SAE in green, SV in blue, No SV in red.

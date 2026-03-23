@@ -65,6 +65,8 @@ def main():
     model_file_tag = model_tag(args.model_name, model_path)
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
+    csv_dir = ensure_dir(results_dir / "csv")
+    plots_dir = ensure_dir(results_dir / "plots")
 
     model, tokenizer = load_model_and_tokenizer(model_path, device=device)
     lid_pipe = pipeline(
@@ -170,8 +172,8 @@ def main():
 
     df = pd.DataFrame(rows)
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
-    csv_path = results_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = results_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    csv_path = csv_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
+    fig_path = plots_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
     df.to_csv(csv_path, index=False)
 
     fig, ax1 = plt.subplots(figsize=(9, 5))
