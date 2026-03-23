@@ -288,9 +288,29 @@ def main():
     sv_df = plot_df[plot_df["method"].str.startswith("SV")].sort_values("k")
     no_sv_df = plot_df[plot_df["method"] == "No SV"]
 
+    marker_map = {1: "o", 2: "^", 3: "s"}
+
     plt.figure(figsize=(8, 6))
-    plt.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", marker="o", linewidth=1.6, label="SAE")
-    plt.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", marker="s", linewidth=1.6, label="SV")
+    plt.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", linewidth=1.6)
+    plt.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", linewidth=1.6)
+    for _, row in sae_df.iterrows():
+        plt.scatter(
+            row["ce_non_target_langs"],
+            row["ce_target_token"],
+            color="green",
+            marker=marker_map.get(int(row["k"]), "o"),
+            s=70,
+            zorder=3,
+        )
+    for _, row in sv_df.iterrows():
+        plt.scatter(
+            row["ce_non_target_langs"],
+            row["ce_target_token"],
+            color="blue",
+            marker=marker_map.get(int(row["k"]), "o"),
+            s=70,
+            zorder=3,
+        )
     plt.scatter(no_sv_df["ce_non_target_langs"], no_sv_df["ce_target_token"], color="red", marker="D", s=90, label="No SV", zorder=3)
     for _, row in plot_df.iterrows():
         plt.text(row["ce_non_target_langs"] + 0.01, row["ce_target_token"] + 0.01, row["method"], fontsize=9)
@@ -299,11 +319,14 @@ def main():
     plt.title(f"Adversarial LID ({model_label}): {args.source_lang} -> {args.target_lang}")
     plt.grid(True, alpha=0.3)
     legend_handles = [
-        Line2D([0], [0], color="green", marker="o", linewidth=1.6, label="SAE"),
-        Line2D([0], [0], color="blue", marker="s", linewidth=1.6, label="SV"),
+        Line2D([0], [0], color="green", linewidth=1.6, label="SAE"),
+        Line2D([0], [0], color="blue", linewidth=1.6, label="SV"),
         Line2D([0], [0], color="red", marker="D", linestyle="None", markersize=8, label="No SV"),
+        Line2D([0], [0], color="black", marker="o", linestyle="None", markersize=7, label="1L"),
+        Line2D([0], [0], color="black", marker="^", linestyle="None", markersize=7, label="2L"),
+        Line2D([0], [0], color="black", marker="s", linestyle="None", markersize=7, label="3L"),
     ]
-    plt.legend(handles=legend_handles)
+    plt.legend(handles=legend_handles, ncol=2)
     plt.tight_layout()
     plt.savefig(fig_path, dpi=200)
     plt.close()
