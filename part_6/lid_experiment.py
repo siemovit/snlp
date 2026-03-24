@@ -11,12 +11,11 @@ import tqdm
 from matplotlib.lines import Line2D
 
 from part_6.steering_utils import (
-    batched,
-    batched_lm_ce_loss_on_texts,
-    batched_target_token_ce_from_prompts,
     build_lid_prompt,
     build_patch_specs,
     build_sv_bank_and_gates,
+    lm_ce_loss_on_text,
+    target_token_ce_from_prompt,
     window_layers,
 )
 from utils import (
@@ -85,18 +84,6 @@ def parse_args():
         type=int,
         default=None,
         help="Optional cap for collateral evaluation samples per non-source language. Defaults to --eval-n.",
-    )
-    parser.add_argument(
-        "--eval-batch-size",
-        type=int,
-        default=8,
-        help="Micro-batch size for source-language Adversarial LID evaluation.",
-    )
-    parser.add_argument(
-        "--collateral-batch-size",
-        type=int,
-        default=8,
-        help="Micro-batch size for collateral LM CE evaluation.",
     )
     parser.add_argument(
         "--verbose-memory",
@@ -208,7 +195,7 @@ def main():
     
     for code in TARGET_LANGS:
         # Figure 8 caption measures the impact on non-original texts, so exclude only source A.
-        if code != args.source_lang:
+        if code != args.source_lang and code != args.target_lang:
             other_non_target.extend(by_lang[code]["eval"][:other_eval_n])
 
     print(
@@ -217,9 +204,7 @@ def main():
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
         f"model={model_label}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
-        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, "
-        f"eval_batch_size={args.eval_batch_size}, collateral_batch_size={args.collateral_batch_size}, "
-        f"cache_dir={cache_dir}"
+        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "
@@ -262,33 +247,17 @@ def main():
             gate_threshold=args.gate_threshold,
         )
         ce_target = []
-        for batch_texts in batched(eval_source, args.eval_batch_size):
-            batch_prompts = [build_lid_prompt(text) for text in batch_texts]
-            ce_target.extend(
-                batched_target_token_ce_from_prompts(
-                    model,
-                    tokenizer,
-                    batch_prompts,
-                    target_word,
-                    device,
-                    patch_specs,
-                )
+        for text in eval_source:
+            ce_target.append(
+                target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
             )
-            for _ in batch_texts:
-                step_progress(f"eval {method_name} source")
+            step_progress(f"eval {method_name} source")
         ce_other = []
-        for batch_texts in batched(other_non_target, args.collateral_batch_size):
-            ce_other.extend(
-                batched_lm_ce_loss_on_texts(
-                    model,
-                    tokenizer,
-                    batch_texts,
-                    device,
-                    patch_specs,
-                )
+        for text in other_non_target:
+            ce_other.append(
+                lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
             )
-            for _ in batch_texts:
-                step_progress(f"eval {method_name} collateral")
+            step_progress(f"eval {method_name} collateral")
         rows.append(
             {
                 "method": method_name,
