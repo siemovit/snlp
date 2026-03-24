@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("--sae-release", default=None)
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
     parser.add_argument("--source-lang", default="fr")
-    parser.add_argument("--target-lang", default="ja")
+    parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=0.5, help="IMPORTANT parameter for scaling steering vectors.")
     parser.add_argument(
