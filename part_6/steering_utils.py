@@ -33,6 +33,13 @@ def window_layers(start_layer: int, k: int, model) -> List[int]:
     return list(range(start_layer, end))
 
 
+def batched(items: List[str], batch_size: int) -> Iterable[List[str]]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    for start in range(0, len(items), batch_size):
+        yield items[start : start + batch_size]
+
+
 def mean_layer_activation_for_texts(
     model,
     tokenizer,
@@ -339,6 +346,45 @@ def target_token_ce_from_prompt(model, tokenizer, prompt: str, target_word: str,
     return F.cross_entropy(logits, y).item()
 
 
+def batched_target_token_ce_from_prompts(
+    model,
+    tokenizer,
+    prompts: List[str],
+    target_word: str,
+    device: str,
+    patch_specs=None,
+) -> List[float]:
+    if not prompts:
+        return []
+
+    encoded = tokenizer(
+        prompts,
+        return_tensors="pt",
+        add_special_tokens=True,
+        padding=True,
+    )
+    ids = encoded["input_ids"].to(device)
+    attention_mask = encoded["attention_mask"].to(device)
+
+    target_ids = tokenizer.encode(" " + target_word, add_special_tokens=False)
+    if not target_ids:
+        return [math.nan] * len(prompts)
+
+    with torch.no_grad():
+        if patch_specs:
+            with apply_layer_patches(model, patch_specs):
+                out = model(ids, attention_mask=attention_mask)
+        else:
+            out = model(ids, attention_mask=attention_mask)
+
+    last_positions = attention_mask.sum(dim=1) - 1
+    batch_idx = torch.arange(ids.size(0), device=ids.device)
+    logits = out.logits[batch_idx, last_positions, :]
+    y = torch.full((ids.size(0),), target_ids[0], device=logits.device, dtype=torch.long)
+    losses = F.cross_entropy(logits, y, reduction="none")
+    return losses.detach().cpu().tolist()
+
+
 def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=None) -> float:
     ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
     if ids.size(1) < 2:
@@ -354,6 +400,43 @@ def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=Non
         else:
             out = model(ids, attention_mask=attention_mask, labels=labels)
     return float(out.loss.item())
+
+
+def batched_lm_ce_loss_on_texts(model, tokenizer, texts: List[str], device: str, patch_specs=None) -> List[float]:
+    if not texts:
+        return []
+
+    encoded = tokenizer(
+        texts,
+        return_tensors="pt",
+        add_special_tokens=True,
+        padding=True,
+    )
+    ids = encoded["input_ids"].to(device)
+    attention_mask = encoded["attention_mask"].to(device)
+    labels = ids.clone()
+    labels[:, 0] = -100
+    labels = labels.masked_fill(attention_mask == 0, -100)
+
+    with torch.no_grad():
+        if patch_specs:
+            with apply_layer_patches(model, patch_specs):
+                out = model(ids, attention_mask=attention_mask)
+        else:
+            out = model(ids, attention_mask=attention_mask)
+
+    shift_logits = out.logits[:, :-1, :].contiguous()
+    shift_labels = labels[:, 1:].contiguous()
+    token_losses = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        reduction="none",
+        ignore_index=-100,
+    ).view(shift_labels.shape)
+    valid = (shift_labels != -100).to(token_losses.dtype)
+    denom = valid.sum(dim=1).clamp_min(1.0)
+    per_example = (token_losses * valid).sum(dim=1) / denom
+    return per_example.detach().cpu().tolist()
 
 
 def set_generation_seed(seed: int = 0):
