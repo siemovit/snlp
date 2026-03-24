@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import subprocess
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -49,13 +50,13 @@ def parse_args():
     parser.add_argument("--sae-release", default=None)
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
     parser.add_argument("--source-lang", default="fr")
-    parser.add_argument("--target-lang", default="en")
+    parser.add_argument("--target-lang", default="ja")
     parser.add_argument("--base-layer", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=0.6, help="IMPORTANT parameter for scaling steering vectors.")
+    parser.add_argument("--alpha", type=float, default=0.5, help="IMPORTANT parameter for scaling steering vectors.")
     parser.add_argument(
         "--target-metric",
         choices=["first-token", "full-label"],
-        default="first-token",
+        default="full-label",
         help="Metric for the y-axis: first target-token CE or autoregressive CE over the full target label.",
     )
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
@@ -79,7 +80,7 @@ def parse_args():
         help="Where to keep SAE gates. 'cpu' is safer on small GPUs; 'same' follows --device.",
     )
     parser.add_argument("--train-n", type=int, default=50, help="Number of source/target samples per language used to build the steering bank.")
-    parser.add_argument("--eval-n", type=int, default=20, help="Number of source-language evaluation samples.")
+    parser.add_argument("--eval-n", type=int, default=10, help="Number of source-language evaluation samples.")
     parser.add_argument(
         "--min-free-gb",
         type=float,
@@ -126,6 +127,15 @@ def main():
     other_eval_n = args.other_eval_n if args.other_eval_n is not None else args.eval_n
     split_eval_n = max(args.eval_n, other_eval_n)
     cache_dir = None if args.no_cache else Path(args.cache_dir)
+    try:
+        commit_short_sha = (
+            subprocess.check_output(
+                ["git", "-C", str(repo_root()), "rev-parse", "--short", "HEAD"],
+                text=True,
+            ).strip()
+        )
+    except Exception:
+        commit_short_sha = "nogit"
 
     if device == "cuda" and available_device != "cuda":
         raise ValueError("CUDA was requested but is not available on this machine.")
@@ -288,8 +298,8 @@ def main():
     run_tag = (
         f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}_{args.target_metric}"
     )
-    csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.csv"
+    fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.png"
     df.to_csv(csv_path, index=False)
 
     # Match the notebook/paper convention: SAE in green, SV in blue, No SV in red.
