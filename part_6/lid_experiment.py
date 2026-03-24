@@ -325,7 +325,10 @@ def main():
     plt.scatter(no_sv_df["ce_non_target_langs"], no_sv_df["ce_target_token"], color="red", marker="D", s=90, label="No SV", zorder=3)
     plt.xlabel(f"CE loss on Flores-10 without {LANG_CODE_TO_NAME[args.source_lang]}")
     plt.ylabel(f"CE loss for target token ({target_word})")
-    plt.title(f"Adversarial LID ({model_label}): {args.source_lang} -> {args.target_lang}")
+    plt.title(
+        f"Adversarial LID ({model_label}): {args.source_lang} -> {args.target_lang}\n"
+        f"train_n={args.train_n}, eval_n={args.eval_n}, other_eval_n={other_eval_n}"
+    )
     plt.grid(True, alpha=0.3)
     legend_handles = [
         Line2D([0], [0], color="green", linewidth=1.6, label="SAE"),
