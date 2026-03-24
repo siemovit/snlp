@@ -21,7 +21,7 @@ Shared notebook logic was moved into:
 - `part_6/steering_utils.py`: steering, gating, prompting, CE evaluation, and generation helpers
 - `download.py`: downloads a supported base model preset
 
-Data lives in `data/`, generated CSV/PNG outputs are written to `results/`, and reusable local artifacts are stored in `cache/`.
+Data lives in `data/`, generated outputs are written under `results/`, and reusable local artifacts are stored in `cache/`.
 
 ## Repository Layout
 
@@ -35,6 +35,9 @@ snlp/
 │   ├── lid_experiment.py
 │   └── steering_utils.py
 ├── results/
+│   ├── csv/
+│   ├── json/
+│   └── plots/
 ├── utils.py
 ├── pyproject.toml
 └── README.md
@@ -99,7 +102,7 @@ The larger file is large enough for the paper-style split:
 The downloader supports these presets:
 
 - `qwen`: model `Qwen/Qwen3-0.6B`, SAE release `mwhanna-qwen3-0.6b-transcoders-lowl0`
-- `gemma-2-2b`: model `google/gemma-2-2b`, SAE release `google/gemma-scope-2b-pt-res`
+- `gemma-2-2b`: model `google/gemma-2-2b`, SAE release `gemma-scope-2b-pt-res`
 
 ```bash
 uv run python download.py --model-name qwen
@@ -135,7 +138,7 @@ uv run python -m part_6.baseline_experiment \
 
 Output:
 
-- `results/baseline_qwen3-0.6b_fr_to_es_alpha20_train4_eval2.json`
+- `results/json/baseline_qwen3-0.6b_fr_to_es_alpha20_train4_eval2.json`
 
 ### Adversarial Language Identification
 
@@ -151,8 +154,8 @@ uv run python -m part_6.lid_experiment \
 
 Outputs:
 
-- `results/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.csv`
-- `results/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.png`
+- `results/csv/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.csv`
+- `results/plots/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.png`
 
 For Gemma:
 
@@ -196,8 +199,8 @@ uv run python -m part_6.clc_experiment \
 
 Outputs:
 
-- `results/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.csv`
-- `results/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.png`
+- `results/csv/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.csv`
+- `results/plots/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.png`
 
 ## Notes
 
@@ -207,3 +210,4 @@ Outputs:
 - The SAE loader expects a release string compatible with `SAE.from_pretrained(release, sae_id)`.
 - The experiments are compute-heavy; CPU runs are possible but slow.
 - Output filenames include the selected model tag so Qwen and Gemma runs do not overwrite each other.
+- Steering vectors are now used without L2 normalization in `lid_experiment.py`, `clc_experiment.py`, and `baseline_experiment.py`.

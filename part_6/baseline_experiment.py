@@ -52,6 +52,7 @@ def main():
     model_file_tag = model_tag(args.model_name, model_path)
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
+    json_dir = ensure_dir(results_dir / "json")
 
     # Load the local model and the small multilingual dataset used for the toy demo.
     model, tokenizer = load_model_and_tokenizer(model_path, device=device)
@@ -185,7 +186,7 @@ def main():
     }
 
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
-    out_path = results_dir / f"baseline_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.json"
+    out_path = json_dir / f"baseline_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.json"
     out_path.write_text(json.dumps(result, indent=2, ensure_ascii=False))
 
     print(f"Toy direction ({model_label}): {args.source_lang} -> {args.target_lang} at layer {args.layer} (alpha={args.alpha})")
