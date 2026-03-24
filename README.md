@@ -48,7 +48,7 @@ snlp/
 ```bash
 cd nlp/snlp
 uv sync
-uv run python download.py --model-name qwen
+uv run python download.py --model-name gemma-2-2b
 uv run python -m part_6.lid_experiment
 ```
 
@@ -144,29 +144,28 @@ Output:
 
 ```bash
 uv run python -m part_6.lid_experiment \
-  --model-name qwen \
+  --model-name gemma-2-2b \
   --source-lang fr \
   --target-lang en \
-  --base-layer 18 \
-  --alpha 10.0 \
-  --device cpu
+  --base-layer 20 \
+  --alpha 0.5 \
+  --train-n 20 \
+  --eval-n 10 \
+  --target-metric first-token \
+  --device cuda \
+  --dtype bfloat16 \
+  --sae-device cuda
 ```
 
 Outputs:
 
-- `results/csv/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.csv`
-- `results/plots/lid_qwen3-0.6b_fr_to_en_alpha10_train20_eval5_other5.png`
+- `results/csv/lid_gemma-2-2b_fr_to_en_alpha0.5_train20_eval10_other10_first-token_<sha>.csv`
+- `results/plots/lid_gemma-2-2b_fr_to_en_alpha0.5_train20_eval10_other10_first-token_<sha>.png`
 
-For Gemma:
+This matches the current defaults closely enough that you can usually just run:
 
 ```bash
-uv run python -m part_6.lid_experiment \
-  --model-name gemma-2-2b \
-  --source-lang fr \
-  --target-lang ja \
-  --base-layer 20 \
-  --alpha 10.0 \
-  --device cpu
+uv run python -m part_6.lid_experiment
 ```
 
 For a larger paper-style run, pass the larger dataset explicitly and increase the sample counts:
@@ -204,10 +203,24 @@ Outputs:
 
 ## Notes
 
-- The default `lid_experiment.py` settings are intentionally small for local safety; use `multilingual_data_test.jsonl` plus larger `--train-n/--eval-n/--other-eval-n` values for paper-style runs.
+- Current `lid_experiment.py` defaults are:
+  - `model-name=gemma-2-2b`
+  - `dataset-path=data/multilingual_data_test.jsonl`
+  - `source-lang=fr`
+  - `target-lang=en`
+  - `base-layer=20`
+  - `alpha=0.5`
+  - `train-n=20`
+  - `eval-n=10`
+  - `other-eval-n=eval-n`
+  - `target-metric=first-token`
+  - `device=cuda`
+  - `dtype=bfloat16`
+  - `sae-device=cuda`
+- The default `lid_experiment.py` settings are still much smaller than the paper-style split; use `multilingual_data_test.jsonl` plus larger `--train-n/--eval-n/--other-eval-n` values for paper-style runs.
 - `lid_experiment.py` defaults to CPU when `--device auto` is used on macOS, to avoid MPS disk-pressure crashes.
 - `clc_experiment.py` uses `laurievb/OpenLID-v2` for language identification of continuations.
 - The SAE loader expects a release string compatible with `SAE.from_pretrained(release, sae_id)`.
 - The experiments are compute-heavy; CPU runs are possible but slow.
-- Output filenames include the selected model tag so Qwen and Gemma runs do not overwrite each other.
+- Output filenames include the selected model tag and the current commit SHA so runs from different code states do not overwrite each other.
 - Steering vectors are now used without L2 normalization in `lid_experiment.py`, `clc_experiment.py`, and `baseline_experiment.py`.
