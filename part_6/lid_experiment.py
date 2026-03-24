@@ -79,7 +79,7 @@ def parse_args():
         default="cuda",
         help="Where to keep SAE gates. 'cpu' is safer on small GPUs; 'same' follows --device.",
     )
-    parser.add_argument("--train-n", type=int, default=50, help="Number of source/target samples per language used to build the steering bank.")
+    parser.add_argument("--train-n", type=int, default=20, help="Number of source/target samples per language used to build the steering bank.")
     parser.add_argument("--eval-n", type=int, default=10, help="Number of source-language evaluation samples.")
     parser.add_argument(
         "--min-free-gb",
@@ -209,11 +209,13 @@ def main():
     target_word = LANG_CODE_TO_NAME[args.target_lang]
     eval_source = by_lang[args.source_lang]["eval"][: args.eval_n]
     other_non_target = []
-    
+
     for code in TARGET_LANGS:
+        # Paper-style split: use non-overlapping evaluation texts after the first train_n examples.
         # Figure 8 caption measures the impact on non-original texts, so exclude only source A.
-        if code != args.source_lang and code != args.target_lang:
-            other_non_target.extend(by_lang[code]["eval"][:other_eval_n])
+        if code == args.source_lang:
+            continue
+        other_non_target.extend(by_lang[code]["eval"][:other_eval_n])
 
     print(
         f"Running Adversarial LID with dataset={args.dataset_path}, "
