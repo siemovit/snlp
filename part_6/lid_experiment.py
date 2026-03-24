@@ -14,6 +14,7 @@ from part_6.steering_utils import (
     build_lid_prompt,
     build_patch_specs,
     build_sv_bank_and_gates,
+    target_label_ce_from_prompt,
     lm_ce_loss_on_text,
     target_token_ce_from_prompt,
     window_layers,
@@ -51,6 +52,12 @@ def parse_args():
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=0.6, help="IMPORTANT parameter for scaling steering vectors.")
+    parser.add_argument(
+        "--target-metric",
+        choices=["first-token", "full-label"],
+        default="first-token",
+        help="Metric for the y-axis: first target-token CE or autoregressive CE over the full target label.",
+    )
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
     parser.add_argument("--gate-threshold", type=float, default=0.0, help="Activation threshold for SAE gating.")
     parser.add_argument(
@@ -203,6 +210,7 @@ def main():
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
         f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
         f"model={model_label}, "
+        f"target_metric={args.target_metric}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
         f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
     )
@@ -225,6 +233,7 @@ def main():
     # 1. Bank construction: 2 * train_n for steering vector and 10*train_n for compute_top_index_per_lan_for_layer and for each layer (so x3)
     # 2. Evaluation: eval_n + 9 * other_eval_n, for each method and there are 7 methods.
     # 3. Total = bank steps + eval steps, as computed above.
+    target_ce_fn = target_token_ce_from_prompt if args.target_metric == "first-token" else target_label_ce_from_prompt
     
     for method_name, k in methods:
         if device == "cuda":
@@ -249,7 +258,7 @@ def main():
         ce_target = []
         for text in eval_source:
             ce_target.append(
-                target_token_ce_from_prompt(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
+                target_ce_fn(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
             )
             step_progress(f"eval {method_name} source")
         ce_other = []
@@ -277,7 +286,7 @@ def main():
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)
     run_tag = (
-        f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}"
+        f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}_{args.target_metric}"
     )
     csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"

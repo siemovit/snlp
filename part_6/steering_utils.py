@@ -339,6 +339,50 @@ def target_token_ce_from_prompt(model, tokenizer, prompt: str, target_word: str,
     return F.cross_entropy(logits, y).item()
 
 
+def target_label_ce_from_prompt(
+    model,
+    tokenizer,
+    prompt: str,
+    target_word: str,
+    device: str,
+    patch_specs=None,
+    reduction: str = "mean",
+) -> float:
+    prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+    label_ids = tokenizer.encode(" " + target_word, add_special_tokens=False)
+    if not label_ids:
+        return math.nan
+
+    full_ids = torch.tensor([prompt_ids + label_ids], device=device, dtype=torch.long)
+    attention_mask = torch.ones_like(full_ids)
+    labels = full_ids.clone()
+    labels[:, : len(prompt_ids)] = -100
+
+    with torch.no_grad():
+        if patch_specs:
+            with apply_layer_patches(model, patch_specs):
+                out = model(full_ids, attention_mask=attention_mask)
+        else:
+            out = model(full_ids, attention_mask=attention_mask)
+
+    shift_logits = out.logits[:, :-1, :].contiguous()
+    shift_labels = labels[:, 1:].contiguous()
+    token_losses = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        reduction="none",
+        ignore_index=-100,
+    ).view(shift_labels.shape)
+    valid = (shift_labels != -100).to(token_losses.dtype)
+    denom = valid.sum().clamp_min(1.0)
+    total = (token_losses * valid).sum()
+    if reduction == "sum":
+        return float(total.item())
+    if reduction == "mean":
+        return float((total / denom).item())
+    raise ValueError(f"Unsupported reduction: {reduction}")
+
+
 def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=None) -> float:
     ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
     if ids.size(1) < 2:
