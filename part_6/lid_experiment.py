@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--target-metric",
         choices=["first-token", "full-label"],
-        default="full-label",
+        default="first-token",
         help="Metric for the y-axis: first target-token CE or autoregressive CE over the full target label.",
     )
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
