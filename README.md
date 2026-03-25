@@ -196,6 +196,22 @@ Outputs:
 - `results/csv/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.csv`
 - `results/plots/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.png`
 
+### Step 4 - Export v / nu Scores From MVA-SNLP
+
+If you already have a `v_score_runs/...` folder from `MVA-SNLP`, you can export a flat CSV
+containing, for each layer and language, the top-k feature indices and their corresponding
+`nu` values:
+
+```bash
+uv run python -m part_6.export_v_scores \
+  --run-dir ../MVA-SNLP/v_score_runs/run_reprod_fig_1 \
+  --top-k 5
+```
+
+Output:
+
+- `results/csv/v_scores_run_reprod_fig_1_top5.csv`
+
 ## Notes
 
 - Current `lid_experiment.py` defaults are:

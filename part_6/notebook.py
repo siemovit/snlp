@@ -46,22 +46,22 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Reproduce the notebook compact Adversarial LID cell as closely as possible."
     )
-    parser.add_argument("--model-name", choices=sorted(MODEL_PRESETS), default="qwen")
+    parser.add_argument("--model-name", choices=sorted(MODEL_PRESETS), default="gemma-2-2b")
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--sae-release", default=None)
-    parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data.jsonl"))
+    parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
     parser.add_argument("--source-lang", default="fr")
     parser.add_argument("--target-lang", default="en")
-    parser.add_argument("--base-layer", type=int, default=18)
-    parser.add_argument("--alpha", type=float, default=10.0)
+    parser.add_argument("--base-layer", type=int, default=20)
+    parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--train-n", type=int, default=20)
-    parser.add_argument("--eval-n", type=int, default=5)
+    parser.add_argument("--eval-n", type=int, default=10)
     parser.add_argument("--gate-topk", type=int, default=2)
     parser.add_argument("--gate-threshold", type=float, default=0.0)
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
-        default="auto",
+        default="cuda",
         help="Use 'mps' to match the notebook if you are on Apple Silicon.",
     )
     return parser.parse_args()
