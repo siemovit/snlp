@@ -63,6 +63,11 @@ def parse_args():
     )
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
     parser.add_argument("--gate-threshold", type=float, default=0.0, help="Activation threshold for SAE gating.")
+    parser.add_argument(
+        "--learned-gating",
+        action="store_true",
+        help="Enable the learned SAE gating baseline in addition to SV and heuristic SAE gating.",
+    )
     parser.add_argument("--learned-train-n", type=int, default=5, help="Number of source and per-language collateral texts used to train the learned gate.")
     parser.add_argument("--learned-epochs", type=int, default=25, help="Number of optimization epochs for the learned gate.")
     parser.add_argument("--learned-lr", type=float, default=0.1, help="Learning rate for the learned gate.")
@@ -179,14 +184,21 @@ def main():
         ("SAE-1L", 1),
         ("SAE-2L", 2),
         ("SAE-3L", 3),
-        ("Learned-1L", 1),
-        ("Learned-2L", 2),
-        ("Learned-3L", 3),
     ]
+    if args.learned_gating:
+        methods.extend(
+            [
+                ("Learned-1L", 1),
+                ("Learned-2L", 2),
+                ("Learned-3L", 3),
+            ]
+        )
 
     total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (
-        2 * args.train_n + 2 * len(TARGET_LANGS) * args.train_n
+        2 * args.train_n + len(TARGET_LANGS) * args.train_n
     )
+    if args.learned_gating:
+        total_bank_steps += len(window_layers(args.base_layer, 3, model)) * (len(TARGET_LANGS) * args.learned_train_n)
     total_eval_steps = len(methods) * (args.eval_n + (len(TARGET_LANGS) - 1) * other_eval_n)
     overall_pbar = tqdm.tqdm(total=total_bank_steps + total_eval_steps, desc="LID pipeline", unit="text")
 
@@ -227,43 +239,45 @@ def main():
         },
         gate_topk=args.gate_topk,
     )
-    learned_gate_bank = build_learned_gate_bank(
-        window,
-        model,
-        tokenizer,
-        TARGET_LANGS,
-        multilingual_texts,
-        args.source_lang,
-        sae_release,
-        device,
-        args.train_n,
-        sv_bank,
-        gate_bank,
-        sae_device=sae_device,
-        sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
-        cache_dir=cache_dir,
-        cache_metadata={
-            "model_path": str(Path(model_path).resolve()),
-            "dataset_path": str(Path(args.dataset_path).resolve()),
-            "source_lang": args.source_lang,
-            "target_lang": args.target_lang,
-            "base_layer": args.base_layer,
-            "train_n": args.train_n,
-            "sae_release": sae_release,
-            "target_lan": TARGET_LANGS,
-            "gate_topk": args.gate_topk,
-            "learned_train_n": args.learned_train_n,
-            "learned_epochs": args.learned_epochs,
-            "learned_lr": args.learned_lr,
-            "learned_collateral_weight": args.learned_collateral_weight,
-        },
-        progress_callback=lambda: step_progress("building learned gates"),
-        target_word=target_word,
-        learned_train_n=args.learned_train_n,
-        learned_epochs=args.learned_epochs,
-        learned_lr=args.learned_lr,
-        learned_collateral_weight=args.learned_collateral_weight,
-    )
+    learned_gate_bank = None
+    if args.learned_gating:
+        learned_gate_bank = build_learned_gate_bank(
+            window,
+            model,
+            tokenizer,
+            TARGET_LANGS,
+            multilingual_texts,
+            args.source_lang,
+            sae_release,
+            device,
+            args.train_n,
+            sv_bank,
+            gate_bank,
+            sae_device=sae_device,
+            sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+            cache_dir=cache_dir,
+            cache_metadata={
+                "model_path": str(Path(model_path).resolve()),
+                "dataset_path": str(Path(args.dataset_path).resolve()),
+                "source_lang": args.source_lang,
+                "target_lang": args.target_lang,
+                "base_layer": args.base_layer,
+                "train_n": args.train_n,
+                "sae_release": sae_release,
+                "target_lan": TARGET_LANGS,
+                "gate_topk": args.gate_topk,
+                "learned_train_n": args.learned_train_n,
+                "learned_epochs": args.learned_epochs,
+                "learned_lr": args.learned_lr,
+                "learned_collateral_weight": args.learned_collateral_weight,
+            },
+            progress_callback=lambda: step_progress("building learned gates"),
+            target_word=target_word,
+            learned_train_n=args.learned_train_n,
+            learned_epochs=args.learned_epochs,
+            learned_lr=args.learned_lr,
+            learned_collateral_weight=args.learned_collateral_weight,
+        )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
     # and also measure collateral CE on all languages except the original/source one.
@@ -284,7 +298,8 @@ def main():
         f"model={model_label}, "
         f"target_metric={args.target_metric}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
-        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, cache_dir={cache_dir}"
+        f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, "
+        f"learned_gating={args.learned_gating}, cache_dir={cache_dir}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "
@@ -401,13 +416,11 @@ def main():
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.png"
     df.to_csv(csv_path, index=False)
 
-    # Match the notebook/paper convention: SAE in green, SV in blue, Learned in orange, No SV in red.
-    plot_order = [
-        "SAE-1L", "SAE-2L", "SAE-3L",
-        "Learned-1L", "Learned-2L", "Learned-3L",
-        "SV-1L", "SV-2L", "SV-3L",
-        "No SV",
-    ]
+    # Match the notebook/paper convention: SAE in green, SV in blue, optional Learned in orange, No SV in red.
+    plot_order = ["SAE-1L", "SAE-2L", "SAE-3L"]
+    if args.learned_gating:
+        plot_order.extend(["Learned-1L", "Learned-2L", "Learned-3L"])
+    plot_order.extend(["SV-1L", "SV-2L", "SV-3L", "No SV"])
     plot_df = df.set_index("method").loc[plot_order].reset_index()
     sae_df = plot_df[plot_df["method"].str.startswith("SAE")].sort_values("k")
     learned_df = plot_df[plot_df["method"].str.startswith("Learned")].sort_values("k")
@@ -418,7 +431,8 @@ def main():
 
     plt.figure(figsize=(8, 6))
     plt.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", linewidth=1.6)
-    plt.plot(learned_df["ce_non_target_langs"], learned_df["ce_target_token"], color="orange", linewidth=1.6)
+    if not learned_df.empty:
+        plt.plot(learned_df["ce_non_target_langs"], learned_df["ce_target_token"], color="orange", linewidth=1.6)
     plt.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", linewidth=1.6)
     for _, row in sae_df.iterrows():
         plt.scatter(
@@ -457,13 +471,14 @@ def main():
     plt.grid(True, alpha=0.3)
     legend_handles = [
         Line2D([0], [0], color="green", linewidth=1.6, label="SAE"),
-        Line2D([0], [0], color="orange", linewidth=1.6, label="Learned"),
         Line2D([0], [0], color="blue", linewidth=1.6, label="SV"),
         Line2D([0], [0], color="red", marker="D", linestyle="None", markersize=8, label="No SV"),
         Line2D([0], [0], color="black", marker="o", linestyle="None", markersize=7, label="1L"),
         Line2D([0], [0], color="black", marker="^", linestyle="None", markersize=7, label="2L"),
         Line2D([0], [0], color="black", marker="s", linestyle="None", markersize=7, label="3L"),
     ]
+    if args.learned_gating:
+        legend_handles.insert(1, Line2D([0], [0], color="orange", linewidth=1.6, label="Learned"))
     plt.legend(handles=legend_handles, ncol=2)
     plt.tight_layout()
     plt.savefig(fig_path, dpi=200)
