@@ -410,7 +410,7 @@ def main():
     # Save both the raw table and the paper-style scatter plot.
     df = pd.DataFrame(rows)
     run_tag = (
-        f"alpha{args.alpha:g}_topk{args.gate_topk}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}_{args.target_metric}"
+        f"layer{args.base_layer}_alpha{args.alpha:g}_topk{args.gate_topk}_train{args.train_n}_eval{args.eval_n}_other{other_eval_n}_{args.target_metric}"
     )
     csv_path = csv_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.csv"
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.png"
