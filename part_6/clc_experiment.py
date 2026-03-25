@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from transformers import pipeline
 
 from part_6.steering_utils import (
     build_cont_prompt,
@@ -34,6 +33,49 @@ from utils import (
     repo_root,
     resolve_model_artifacts,
 )
+
+
+def load_lid_predictor(model_id: str, device: str):
+    """Load OpenLID-v2 through fastText when requested, otherwise fall back to a Transformers pipeline."""
+    if model_id == "laurievb/OpenLID-v2":
+        try:
+            import fasttext
+            from huggingface_hub import hf_hub_download
+            from openlid_normer import clean_line
+        except ImportError as exc:
+            raise ImportError(
+                "OpenLID-v2 is a fastText model, not a standard Transformers model. "
+                "Install the required dependencies in the project environment, e.g. "
+                "`uv add fasttext openlid_normer`, then rerun `part_6.clc_experiment`."
+            ) from exc
+
+        model_path = hf_hub_download(repo_id=model_id, filename="model.bin")
+        lid_model = fasttext.load_model(model_path)
+
+        def predict_fn(text: str) -> str:
+            cleaned = clean_line(text)
+            labels, _scores = lid_model.predict(cleaned or text, k=1)
+            return labels[0] if labels else ""
+
+        return predict_fn
+
+    from transformers import pipeline
+
+    lid_pipe = pipeline(
+        "text-classification",
+        model=model_id,
+        device=0 if "cuda" in device else -1,
+    )
+
+    def predict_fn(text: str) -> str:
+        pred = lid_pipe(text[:1200], truncation=True, top_k=1)
+        if isinstance(pred, list) and pred and isinstance(pred[0], dict):
+            return pred[0].get("label", "")
+        if isinstance(pred, list) and pred and isinstance(pred[0], list):
+            return pred[0][0].get("label", "")
+        return ""
+
+    return predict_fn
 
 
 def parse_args():
@@ -69,11 +111,7 @@ def main():
     plots_dir = ensure_dir(results_dir / "plots")
 
     model, tokenizer = load_model_and_tokenizer(model_path, device=device)
-    lid_pipe = pipeline(
-        "text-classification",
-        model=args.lid_model,
-        device=0 if "cuda" in device else -1,
-    )
+    lid_predict = load_lid_predictor(args.lid_model, device)
 
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
@@ -142,13 +180,7 @@ def main():
             )
             continuation = full.split("Continuation:")[-1].strip()
             continuation_short = first_n_words(continuation, n_words=args.n_words_for_lid)
-            pred = lid_pipe(continuation_short[:1200], truncation=True, top_k=1)
-            if isinstance(pred, list) and pred and isinstance(pred[0], dict):
-                label = pred[0].get("label", "")
-            elif isinstance(pred, list) and pred and isinstance(pred[0], list):
-                label = pred[0][0].get("label", "")
-            else:
-                label = ""
+            label = lid_predict(continuation_short)
             ok += int(normalize_openlid_label(label) == args.target_lang)
             total += 1
 
