@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import tqdm
 
 from part_6.steering_utils import (
     build_cont_prompt,
@@ -158,6 +159,8 @@ def main():
             non_source_texts.extend(by_lang[code]["eval"])
 
     rows = []
+    total_steps = len(methods) * (len(source_eval_texts) + len(non_source_texts))
+    pbar = tqdm.tqdm(total=total_steps, desc="CLC pipeline", unit="text")
     for method_name, k in methods:
         patch_specs = build_patch_specs(
             method_name,
@@ -190,11 +193,15 @@ def main():
             label = lid_predict(continuation_short)
             ok += int(normalize_openlid_label(label) == args.target_lang)
             total += 1
+            pbar.set_postfix_str(f"eval {method_name} source")
+            pbar.update(1)
 
         ce_collateral = [
             lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
             for text in non_source_texts
         ]
+        pbar.set_postfix_str(f"eval {method_name} collateral")
+        pbar.update(len(non_source_texts))
 
         rows.append(
             {
@@ -208,6 +215,7 @@ def main():
         gc.collect()
         if device == "cuda":
             torch.cuda.empty_cache()
+    pbar.close()
 
     df = pd.DataFrame(rows)
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
