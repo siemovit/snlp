@@ -15,8 +15,9 @@ from part_6.steering_utils import (
     build_lid_prompt,
     build_patch_specs,
     build_sv_bank_and_gates,
-    target_label_ce_from_prompt,
     lm_ce_loss_on_text,
+    measure_sae_gate_activation_rate,
+    target_label_ce_from_prompt,
     target_token_ce_from_prompt,
     window_layers,
 )
@@ -107,6 +108,17 @@ def parse_args():
         "--no-cache",
         action="store_true",
         help="Disable loading/saving the local cache for sv_bank and top_idx_layer.",
+    )
+    parser.add_argument(
+        "--diagnose-gates",
+        action="store_true",
+        help="Print average SAE gate activation rates on a small source/collateral sample before evaluation.",
+    )
+    parser.add_argument(
+        "--diagnose-n",
+        type=int,
+        default=5,
+        help="Number of source and collateral texts used for SAE gate diagnostics.",
     )
     return parser.parse_args()
 
@@ -231,6 +243,42 @@ def main():
         f"collateral samples={len(other_non_target)} | "
         f"total prompt evaluations={len(methods) * (len(eval_source) + len(other_non_target))}"
     )
+    if args.diagnose_gates:
+        diag_source = eval_source[: args.diagnose_n]
+        diag_other = other_non_target[: args.diagnose_n]
+        print("SAE gate diagnostics:")
+        for layer_idx in window:
+            feature_indices = gate_bank.get(layer_idx)
+            if feature_indices is None:
+                continue
+            source_rate = measure_sae_gate_activation_rate(
+                model,
+                tokenizer,
+                diag_source,
+                layer_idx,
+                sae_release,
+                feature_indices,
+                device,
+                sae_device=sae_device,
+                sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+                threshold=args.gate_threshold,
+            )
+            other_rate = measure_sae_gate_activation_rate(
+                model,
+                tokenizer,
+                diag_other,
+                layer_idx,
+                sae_release,
+                feature_indices,
+                device,
+                sae_device=sae_device,
+                sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+                threshold=args.gate_threshold,
+            )
+            print(
+                f"  layer {layer_idx}: features={feature_indices} | "
+                f"source_rate={source_rate:.4f} | other_rate={other_rate:.4f}"
+            )
     if device == "cuda":
         report = get_device_memory_report(device)
         if report is not None:

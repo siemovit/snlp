@@ -216,6 +216,53 @@ def make_sae_gate_fn(sae, feature_indices, threshold: float = 0.0):
     return gate_fn
 
 
+def measure_sae_gate_activation_rate(
+    model,
+    tokenizer,
+    texts: List[str],
+    layer_idx: int,
+    release: str,
+    feature_indices: List[int],
+    device: str,
+    sae_device: str | None = None,
+    sae_dtype: torch.dtype | None = None,
+    threshold: float = 0.0,
+) -> float:
+    if not texts:
+        return math.nan
+
+    sae = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
+    gate_fn = make_sae_gate_fn(sae, feature_indices, threshold=threshold)
+    activation_rates = []
+    captured_hidden = None
+
+    def hook_fn(_m, _inp, out):
+        nonlocal captured_hidden
+        captured_hidden = out[0] if isinstance(out, tuple) else out
+        return out
+
+    handle = get_layer_module(model, layer_idx).register_forward_hook(hook_fn)
+    try:
+        with torch.no_grad():
+            for text in texts:
+                ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
+                attention_mask = torch.ones_like(ids)
+                captured_hidden = None
+                _ = model(ids, attention_mask=attention_mask)
+                if captured_hidden is None:
+                    continue
+                gate = gate_fn(captured_hidden)
+                activation_rates.append(float(gate.float().mean().item()))
+    finally:
+        handle.remove()
+
+    del sae
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    return float(np.mean(activation_rates)) if activation_rates else math.nan
+
+
 def _stable_cache_key(kind: str, cache_metadata: dict, layer_idx: int) -> str:
     payload = {"kind": kind, "layer_idx": layer_idx, **cache_metadata}
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
