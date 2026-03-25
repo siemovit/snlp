@@ -1,7 +1,6 @@
 # SNLP Steering Experiments
 
-This repository extracts the steering-vector part of `SNLP_with_steering.ipynb` into a small, runnable project. It keeps only the utilities needed for the Part 6 experiments:
-
+This repository reproduces the results from part 6 on the steering vectors from the paper Deng et al. 2025. There are code and experiment for:
 - steering vectors and SAE-gated steering
 - Adversarial Language Identification
 - Cross-Lingual Continuation
@@ -15,13 +14,13 @@ The code is organized around two experiment entry points in `part_6/`:
 - `part_6/lid_experiment.py`: Adversarial Language Identification
 - `part_6/clc_experiment.py`: Cross-Lingual Continuation
 
-Shared notebook logic was moved into:
+Core and utils can be found into into:
 
 - `utils.py`: dataset/model helpers and `compute_top_index_per_lan_for_layer`
 - `part_6/steering_utils.py`: steering, gating, prompting, CE evaluation, and generation helpers
 - `download.py`: downloads a supported base model preset
 
-Data lives in `data/`, generated outputs are written under `results/`, and reusable local artifacts are stored in `cache/`.
+Data lives in `data/`, generated outputs are written under `results/`, and reusable local artifacts are stored in `cache/` (for building SV data bank for instance, accross experiments). 
 
 ## Repository Layout
 
@@ -58,8 +57,8 @@ uv run python -m part_6.lid_experiment
 
 - Python 3.11+
 - `uv`
-- enough disk space for the model and SAE checkpoints
-- optional GPU support for practical runtimes
+- enough disk space for the model, SAE checkpoints are not downloaded directly, only the needed are used on the fly.  
+- GPU support
 
 ### Installation
 
@@ -97,7 +96,9 @@ The larger file is large enough for the paper-style split:
 - first `100` samples per language for steering/gate construction
 - next `500` non-overlapping samples per language for evaluation
 
-## Downloading Model
+## Run
+
+### Downloading the model
 
 The downloader supports these presets:
 
@@ -111,17 +112,10 @@ uv run python download.py --model-name gemma-2-2b
 
 The model is stored under `models/`.
 
-For SAE loading, the code follows the notebook pattern directly:
-
-```python
-release = "mwhanna-qwen3-0.6b-transcoders-lowl0"
-sae_id = "layer_18"
-sae = SAE.from_pretrained(release, sae_id).to(device)
-target_layer = 18
-```
-
 The experiment scripts accept `--model-name` and automatically pick matching defaults for
 `--model-path` and `--sae-release`. You can still override either of them manually.
+
+Default base layer for SAE is 20. 
 
 ## Running The Experiments
 
@@ -131,9 +125,9 @@ The experiment scripts accept `--model-name` and automatically pick matching def
 uv run python -m part_6.baseline_experiment \
   --model-name qwen \
   --source-lang fr \
-  --target-lang es \
-  --layer 18 \
-  --alpha 20.0
+  --target-lang en \
+  --base-layer 20 \
+  --alpha 0.5
 ```
 
 Output:
@@ -176,8 +170,11 @@ uv run python -m part_6.lid_experiment \
   --train-n 100 \
   --eval-n 500 \
   --other-eval-n 500 \
-  --device cpu
+  --device cuda
 ```
+
+> [!WARNING]  
+> Putting 100 for --train-n may make the GPU or memory blow up. On a Tesla V100, it was the case. 
 
 `lid_experiment.py` caches per-layer `sv_bank` and `top_idx_layer` tensors under `cache/` by default. Disable that behavior with:
 
