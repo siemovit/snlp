@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -41,13 +42,19 @@ def load_lid_predictor(model_id: str, device: str):
         try:
             import fasttext
             from huggingface_hub import hf_hub_download
-            from openlid_normer import clean_line
         except ImportError as exc:
             raise ImportError(
                 "OpenLID-v2 is a fastText model, not a standard Transformers model. "
-                "Install the required dependencies in the project environment, e.g. "
-                "`uv add fasttext openlid_normer`, then rerun `part_6.clc_experiment`."
+                "Install the required dependency in the project environment, e.g. "
+                "`uv add fasttext`, then rerun `part_6.clc_experiment`."
             ) from exc
+
+        try:
+            from openlid_normer import clean_line  # type: ignore
+        except ImportError:
+            def clean_line(text: str) -> str:
+                text = re.sub(r"\s+", " ", text).strip()
+                return text
 
         model_path = hf_hub_download(repo_id=model_id, filename="model.bin")
         lid_model = fasttext.load_model(model_path)
