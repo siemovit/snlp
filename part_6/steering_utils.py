@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import tqdm
 from huggingface_hub import HfApi
 from sae_lens import SAE
 
@@ -391,6 +392,7 @@ def optimize_learned_sae_gate_for_layer(
     epochs: int = 25,
     lr: float = 0.1,
     collateral_weight: float = 0.2,
+    progress_desc: str | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Optimize a learned soft gate directly against target and collateral CE objectives."""
     for param in model.parameters():
@@ -405,7 +407,14 @@ def optimize_learned_sae_gate_for_layer(
     source_prompts = [build_lid_prompt(text) for text in source_texts]
     delta = sv_vec.detach()
 
-    for _ in range(max(1, epochs)):
+    epoch_iter = range(max(1, epochs))
+    pbar = None
+    if progress_desc is not None:
+        pbar = tqdm.tqdm(epoch_iter, desc=progress_desc, leave=False, unit="epoch")
+        epoch_iter = pbar
+
+    total_epochs = max(1, epochs)
+    for epoch_idx in epoch_iter:
         optimizer.zero_grad()
         gate_fn = _build_trainable_learned_gate_fn(sae, feature_indices, weight, bias)
         patch_specs = [(layer_idx, delta, gate_fn)]
@@ -425,6 +434,13 @@ def optimize_learned_sae_gate_for_layer(
         loss = source_term + collateral_weight * other_term
         loss.backward()
         optimizer.step()
+        if pbar is not None:
+            pbar.set_postfix_str(
+                f"epoch={epoch_idx + 1}/{total_epochs} loss={loss.item():.4f} src={source_term.item():.4f} other={other_term.item():.4f}"
+            )
+
+    if pbar is not None:
+        pbar.close()
 
     return weight.detach().cpu(), float(bias.detach().item())
 
@@ -691,6 +707,7 @@ def build_learned_gate_bank(
             epochs=learned_epochs,
             lr=learned_lr,
             collateral_weight=learned_collateral_weight,
+            progress_desc=f"Learned gate layer {layer_idx} ({learned_epochs} epochs)",
         )
         payload = {
             "feature_indices": list(feature_indices),
