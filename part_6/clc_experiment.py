@@ -4,7 +4,6 @@ import argparse
 import gc
 import re
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -95,6 +94,12 @@ def parse_args():
     parser.add_argument("--dataset-path", default=str(root / "data" / "multilingual_data_test.jsonl"))
     parser.add_argument("--lid-model", default="laurievb/OpenLID-v2")
     parser.add_argument("--source-lang", default="fr")
+    parser.add_argument(
+        "--source-langs",
+        nargs="*",
+        default=None,
+        help="Optional list of source languages. Defaults to all TARGET_LANGS except target-lang.",
+    )
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=20)
     parser.add_argument("--alpha", type=float, default=0.5)
@@ -116,7 +121,6 @@ def main():
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
     csv_dir = ensure_dir(results_dir / "csv")
-    plots_dir = ensure_dir(results_dir / "plots")
 
     model, tokenizer = load_model_and_tokenizer(model_path, device=device)
     lid_predict = load_lid_predictor(args.lid_model, device)
@@ -125,120 +129,116 @@ def main():
     lang_texts = build_language_texts(data, TARGET_LANGS)
     by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=args.eval_n, target_langs=TARGET_LANGS)
     multilingual_texts = flatten_language_texts(lang_texts, TARGET_LANGS)
-
-    window = window_layers(args.base_layer, 3, model)
-    sv_bank, gate_bank = build_sv_bank_and_gates(
-        window,
-        model,
-        tokenizer,
-        by_lang[args.target_lang]["train"],
-        by_lang[args.source_lang]["train"],
-        TARGET_LANGS,
-        multilingual_texts,
-        args.source_lang,
-        sae_release,
-        device,
-        args.train_n,
-        gate_topk=args.gate_topk,
-    )
+    source_langs = args.source_langs or [code for code in TARGET_LANGS if code != args.target_lang]
 
     methods = [
         ("SV-1L", 1),
         ("SAE-3L", 3),
     ]
 
-    source_eval_texts = by_lang[args.source_lang]["eval"]
-    non_source_texts = []
-    for code in TARGET_LANGS:
-        if code != args.source_lang:
-            non_source_texts.extend(by_lang[code]["eval"])
+    per_source_sizes = []
+    for source_lang in source_langs:
+        source_eval_texts = by_lang[source_lang]["eval"]
+        non_source_texts = []
+        for code in TARGET_LANGS:
+            if code != source_lang:
+                non_source_texts.extend(by_lang[code]["eval"])
+        per_source_sizes.append((source_lang, len(source_eval_texts), len(non_source_texts)))
 
     rows = []
-    total_steps = len(methods) * (len(source_eval_texts) + len(non_source_texts))
+    total_steps = sum(len(methods) * (n_source + n_other) for _, n_source, n_other in per_source_sizes)
     pbar = tqdm.tqdm(total=total_steps, desc="CLC pipeline", unit="text")
-    for method_name, k in methods:
-        patch_specs = build_patch_specs(
-            method_name,
-            k,
-            args.base_layer,
+    for source_lang in source_langs:
+        window = window_layers(args.base_layer, 3, model)
+        sv_bank, gate_bank = build_sv_bank_and_gates(
+            window,
             model,
-            sv_bank,
-            gate_bank,
-            alpha=args.alpha,
-            sae_release=sae_release,
-            sae_device=device,
-            sae_dtype=next(model.parameters()).dtype if device != "cpu" else torch.float32,
-            gate_threshold=args.gate_threshold,
+            tokenizer,
+            by_lang[args.target_lang]["train"],
+            by_lang[source_lang]["train"],
+            TARGET_LANGS,
+            multilingual_texts,
+            source_lang,
+            sae_release,
+            device,
+            args.train_n,
+            gate_topk=args.gate_topk,
         )
 
-        ok = 0
-        total = 0
-        for text in source_eval_texts:
-            prompt = build_cont_prompt(text, LANG_CODE_TO_NAME[args.target_lang])
-            full = generate_continuation(
+        source_eval_texts = by_lang[source_lang]["eval"]
+        non_source_texts = []
+        for code in TARGET_LANGS:
+            if code != source_lang:
+                non_source_texts.extend(by_lang[code]["eval"])
+
+        source_rows = []
+        for method_name, k in methods:
+            patch_specs = build_patch_specs(
+                method_name,
+                k,
+                args.base_layer,
                 model,
-                tokenizer,
-                prompt,
-                max_new_tokens=args.max_new_tokens,
-                device=device,
-                patch_specs=patch_specs,
+                sv_bank,
+                gate_bank,
+                alpha=args.alpha,
+                sae_release=sae_release,
+                sae_device=device,
+                sae_dtype=next(model.parameters()).dtype if device != "cpu" else torch.float32,
+                gate_threshold=args.gate_threshold,
             )
-            continuation = full.split("Continuation:")[-1].strip()
-            continuation_short = first_n_words(continuation, n_words=args.n_words_for_lid)
-            label = lid_predict(continuation_short)
-            ok += int(normalize_openlid_label(label) == args.target_lang)
-            total += 1
-            pbar.set_postfix_str(f"eval {method_name} source")
-            pbar.update(1)
 
-        ce_collateral = [
-            lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
-            for text in non_source_texts
-        ]
-        pbar.set_postfix_str(f"eval {method_name} collateral")
-        pbar.update(len(non_source_texts))
+            ok = 0
+            total = 0
+            for text in source_eval_texts:
+                prompt = build_cont_prompt(text, LANG_CODE_TO_NAME[args.target_lang])
+                full = generate_continuation(
+                    model,
+                    tokenizer,
+                    prompt,
+                    max_new_tokens=args.max_new_tokens,
+                    device=device,
+                    patch_specs=patch_specs,
+                )
+                continuation = full.split("Continuation:")[-1].strip()
+                continuation_short = first_n_words(continuation, n_words=args.n_words_for_lid)
+                label = lid_predict(continuation_short)
+                ok += int(normalize_openlid_label(label) == args.target_lang)
+                total += 1
+                pbar.set_postfix_str(f"{source_lang} {method_name} source")
+                pbar.update(1)
 
-        rows.append(
-            {
+            ce_collateral = [
+                lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
+                for text in non_source_texts
+            ]
+            pbar.set_postfix_str(f"{source_lang} {method_name} collateral")
+            pbar.update(len(non_source_texts))
+
+            row = {
+                "source_lang": source_lang,
+                "target_lang": args.target_lang,
                 "method": method_name,
                 "k": k,
                 "success_rate": ok / max(total, 1),
                 "ce_non_source_flores10": float(pd.Series(ce_collateral).mean()),
             }
-        )
-        del patch_specs
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
+            rows.append(row)
+            source_rows.append(row)
+            del patch_specs
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
     pbar.close()
 
     df = pd.DataFrame(rows)
     run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
-    csv_path = csv_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.csv"
-    fig_path = plots_dir / f"clc_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}.png"
+    source_tag = "all" if args.source_langs else args.source_lang
+    csv_path = csv_dir / f"clc_{model_file_tag}_{source_tag}_to_{args.target_lang}_{run_tag}.csv"
     df.to_csv(csv_path, index=False)
 
-    fig, ax1 = plt.subplots(figsize=(9, 5))
-    ax2 = ax1.twinx()
-    x = np.arange(len(df))
-    ax1.bar(x - 0.18, df["success_rate"].values, width=0.35, label="Success rate")
-    ax2.bar(x + 0.18, df["ce_non_source_flores10"].values, width=0.35, color="tab:orange", label="CE (non-source)")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(df["method"].values, rotation=30, ha="right")
-    ax1.set_ylabel("Success rate (higher is better)")
-    ax2.set_ylabel("CE on non-source Flores-10 (lower is better)")
-    ax1.set_title(f"Cross-Lingual Continuation ({model_label}): {args.source_lang} -> {args.target_lang}")
-    ax1.grid(True, axis="y", alpha=0.3)
-    h1, l1 = ax1.get_legend_handles_labels()
-    h2, l2 = ax2.get_legend_handles_labels()
-    ax1.legend(h1 + h2, l1 + l2, loc="upper right")
-    plt.tight_layout()
-    plt.savefig(fig_path, dpi=200)
-    plt.close()
-
-    print(df.sort_values(["method"]))
+    print(df.sort_values(["source_lang", "method"]))
     print(f"Saved CSV: {csv_path}")
-    print(f"Saved figure: {fig_path}")
 
 
 if __name__ == "__main__":
