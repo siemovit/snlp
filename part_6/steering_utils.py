@@ -312,6 +312,107 @@ def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: f
     return gate_fn
 
 
+def _build_trainable_learned_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: torch.Tensor):
+    idx = torch.as_tensor(feature_indices, dtype=torch.long)
+    sae_device = next(sae.parameters()).device
+
+    def gate_fn(hidden_states):
+        acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
+        picked = acts[..., idx.to(acts.device)].to(torch.float32)
+        logits = picked @ weight + bias
+        return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
+
+    return gate_fn
+
+
+def _source_target_ce_with_patch(
+    model,
+    tokenizer,
+    prompt: str,
+    target_word: str,
+    device: str,
+    patch_specs,
+):
+    ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
+    attention_mask = torch.ones_like(ids)
+    target_ids = tokenizer.encode(" " + target_word, add_special_tokens=False)
+    if not target_ids:
+        raise ValueError(f"Could not tokenize target word: {target_word}")
+    with apply_layer_patches(model, patch_specs):
+        out = model(ids, attention_mask=attention_mask)
+    logits = out.logits[:, -1, :]
+    y = torch.tensor([target_ids[0]], device=logits.device)
+    return F.cross_entropy(logits, y)
+
+
+def _collateral_lm_ce_with_patch(
+    model,
+    tokenizer,
+    text: str,
+    device: str,
+    patch_specs,
+):
+    ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
+    attention_mask = torch.ones_like(ids)
+    labels = ids.clone()
+    labels[:, 0] = -100
+    with apply_layer_patches(model, patch_specs):
+        out = model(ids, attention_mask=attention_mask, labels=labels)
+    return out.loss
+
+
+def optimize_learned_sae_gate_for_layer(
+    model,
+    tokenizer,
+    sae,
+    layer_idx: int,
+    feature_indices: List[int],
+    sv_vec: torch.Tensor,
+    source_texts: List[str],
+    other_texts: List[str],
+    target_word: str,
+    device: str,
+    *,
+    epochs: int = 25,
+    lr: float = 0.1,
+    collateral_weight: float = 0.2,
+) -> tuple[torch.Tensor, float]:
+    for param in model.parameters():
+        param.requires_grad_(False)
+    for param in sae.parameters():
+        param.requires_grad_(False)
+
+    weight = torch.zeros((len(feature_indices),), device=next(sae.parameters()).device, dtype=torch.float32, requires_grad=True)
+    bias = torch.zeros((), device=weight.device, dtype=torch.float32, requires_grad=True)
+    optimizer = torch.optim.Adam([weight, bias], lr=lr)
+
+    source_prompts = [build_lid_prompt(text) for text in source_texts]
+    delta = sv_vec.detach()
+
+    for _ in range(max(1, epochs)):
+        optimizer.zero_grad()
+        gate_fn = _build_trainable_learned_gate_fn(sae, feature_indices, weight, bias)
+        patch_specs = [(layer_idx, delta, gate_fn)]
+        source_losses = [
+            _source_target_ce_with_patch(model, tokenizer, prompt, target_word, device, patch_specs)
+            for prompt in source_prompts
+        ]
+        other_losses = [
+            _collateral_lm_ce_with_patch(model, tokenizer, text, device, patch_specs)
+            for text in other_texts
+        ]
+        source_term = torch.stack(source_losses).mean()
+        if other_losses:
+            other_term = torch.stack(other_losses).mean()
+        else:
+            other_term = torch.zeros((), device=source_term.device)
+        loss = source_term + collateral_weight * other_term
+        loss.backward()
+        optimizer.step()
+
+    return weight.detach().cpu(), float(bias.detach().item())
+
+
 def measure_sae_gate_activation_rate(
     model,
     tokenizer,
@@ -470,12 +571,18 @@ def build_learned_gate_bank(
     release: str,
     device: str,
     train_n: int,
+    sv_bank: Dict[int, torch.Tensor],
     feature_bank: Dict[int, List[int]],
     sae_device: str | None = None,
     sae_dtype: torch.dtype | None = None,
     cache_dir: str | Path | None = None,
     cache_metadata: dict | None = None,
     progress_callback=None,
+    target_word: str | None = None,
+    learned_train_n: int = 5,
+    learned_epochs: int = 25,
+    learned_lr: float = 0.1,
+    learned_collateral_weight: float = 0.2,
 ) -> Dict[int, Dict[str, object]]:
     learned_gate_bank: Dict[int, Dict[str, object]] = {}
     cache_dir = Path(cache_dir) if cache_dir is not None else None
@@ -485,12 +592,14 @@ def build_learned_gate_bank(
 
     block_size = len(multilingual_texts) // len(target_lan)
     source_idx = target_lan.index(source_lang)
-    pos_texts = multilingual_texts[source_idx * block_size : (source_idx + 1) * block_size][:train_n]
+    pos_texts = multilingual_texts[source_idx * block_size : (source_idx + 1) * block_size][:learned_train_n]
     neg_texts = []
     for i, _lan in enumerate(target_lan):
         if i == source_idx:
             continue
-        neg_texts.extend(multilingual_texts[i * block_size : (i + 1) * block_size][:train_n])
+        neg_texts.extend(multilingual_texts[i * block_size : (i + 1) * block_size][:learned_train_n])
+    if target_word is None:
+        raise ValueError("target_word is required to build the learned gate bank.")
 
     for layer_idx in window_layers_to_use:
         feature_indices = feature_bank.get(layer_idx)
@@ -513,19 +622,21 @@ def build_learned_gate_bank(
             continue
 
         sae = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
-        pos_features = _collect_topk_feature_activations_for_texts(
-            model, tokenizer, sae, layer_idx, pos_texts, feature_indices, device, max_texts=train_n
+        weight, bias = optimize_learned_sae_gate_for_layer(
+            model,
+            tokenizer,
+            sae,
+            layer_idx,
+            feature_indices,
+            sv_vec=sv_bank[layer_idx],
+            source_texts=pos_texts,
+            other_texts=neg_texts,
+            target_word=target_word,
+            device=device,
+            epochs=learned_epochs,
+            lr=learned_lr,
+            collateral_weight=learned_collateral_weight,
         )
-        if progress_callback is not None:
-            for _ in range(len(pos_texts)):
-                progress_callback()
-        neg_features = _collect_topk_feature_activations_for_texts(
-            model, tokenizer, sae, layer_idx, neg_texts, feature_indices, device, max_texts=len(neg_texts)
-        )
-        if progress_callback is not None:
-            for _ in range(len(neg_texts)):
-                progress_callback()
-        weight, bias = learn_linear_sae_gate(pos_features, neg_features)
         payload = {
             "feature_indices": list(feature_indices),
             "weight": weight.cpu(),

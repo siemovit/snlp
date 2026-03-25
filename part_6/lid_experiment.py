@@ -63,6 +63,10 @@ def parse_args():
     )
     parser.add_argument("--gate-topk", type=int, default=2, help="Number of source-language SAE features used for gating.")
     parser.add_argument("--gate-threshold", type=float, default=0.0, help="Activation threshold for SAE gating.")
+    parser.add_argument("--learned-train-n", type=int, default=5, help="Number of source and per-language collateral texts used to train the learned gate.")
+    parser.add_argument("--learned-epochs", type=int, default=25, help="Number of optimization epochs for the learned gate.")
+    parser.add_argument("--learned-lr", type=float, default=0.1, help="Learning rate for the learned gate.")
+    parser.add_argument("--learned-collateral-weight", type=float, default=0.2, help="Weight of collateral LM CE in the learned gate objective.")
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
@@ -190,6 +194,8 @@ def main():
         overall_pbar.set_postfix_str(phase)
         overall_pbar.update(1)
 
+    target_word = LANG_CODE_TO_NAME[args.target_lang]
+
     # Build the 1L/2L/3L steering vectors and SAE gates starting from the chosen base layer.
     window = window_layers(args.base_layer, 3, model)
     sv_bank, gate_bank = build_sv_bank_and_gates(
@@ -231,6 +237,7 @@ def main():
         sae_release,
         device,
         args.train_n,
+        sv_bank,
         gate_bank,
         sae_device=sae_device,
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
@@ -245,13 +252,21 @@ def main():
             "sae_release": sae_release,
             "target_lan": TARGET_LANGS,
             "gate_topk": args.gate_topk,
+            "learned_train_n": args.learned_train_n,
+            "learned_epochs": args.learned_epochs,
+            "learned_lr": args.learned_lr,
+            "learned_collateral_weight": args.learned_collateral_weight,
         },
         progress_callback=lambda: step_progress("building learned gates"),
+        target_word=target_word,
+        learned_train_n=args.learned_train_n,
+        learned_epochs=args.learned_epochs,
+        learned_lr=args.learned_lr,
+        learned_collateral_weight=args.learned_collateral_weight,
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
     # and also measure collateral CE on all languages except the original/source one.
-    target_word = LANG_CODE_TO_NAME[args.target_lang]
     eval_source = by_lang[args.source_lang]["eval"][: args.eval_n]
     other_non_target = []
 
