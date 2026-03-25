@@ -21,14 +21,17 @@ from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer, gather
 
 
 def get_layer_module(model, layer_idx: int):
+    """Return the transformer block module addressed by layer_idx."""
     return model.model.layers[layer_idx]
 
 
 def num_layers(model) -> int:
+    """Read the number of hidden layers from the loaded model config."""
     return int(model.config.num_hidden_layers)
 
 
 def window_layers(start_layer: int, k: int, model) -> List[int]:
+    """Return the contiguous layer window used by 1L/2L/3L interventions."""
     end = min(start_layer + k, num_layers(model))
     return list(range(start_layer, end))
 
@@ -41,6 +44,7 @@ def mean_layer_activation_for_texts(
     device: str,
     progress_callback=None,
 ) -> torch.Tensor:
+    """Average residual activations over texts at one layer to build steering vectors."""
     pooled = []
 
     def hook_fn(_m, _inp, out):
@@ -72,6 +76,7 @@ def compute_steering_vector(
     normalize: bool = True,
     progress_callback=None,
 ):
+    """Compute the source-to-target steering direction from mean layer activations."""
     pos_mean = mean_layer_activation_for_texts(
         model, tokenizer, pos_texts, layer_idx, device, progress_callback=progress_callback
     )
@@ -86,6 +91,7 @@ def compute_steering_vector(
 
 @contextmanager
 def apply_layer_patches(model, patch_specs):
+    """Temporarily inject steering patches as forward hooks on selected layers."""
     handles = []
 
     def make_hook(delta_vec, gate_fn=None):
@@ -128,6 +134,7 @@ def build_patch_specs(
     sae_dtype: torch.dtype | None = None,
     gate_threshold: float = 0.0,
 ):
+    """Translate a method label into the concrete layer patches applied during evaluation."""
     if method_name == "No SV":
         return []
 
@@ -200,6 +207,7 @@ def _discover_gemma_sae_ids(release: str, layer_idx: int) -> Tuple[str, ...]:
 
 
 def try_load_sae_for_layer(release: str, layer_idx: int, device: str, dtype: torch.dtype | None = None):
+    """Load one SAE/transcoder checkpoint for a specific layer across supported releases."""
     if "gemma-scope" in release:
         candidates = list(_discover_gemma_sae_ids(release, layer_idx))
     else:
@@ -219,6 +227,7 @@ def try_load_sae_for_layer(release: str, layer_idx: int, device: str, dtype: tor
 
 
 def make_sae_gate_fn(sae, feature_indices, threshold: float = 0.0):
+    """Build the heuristic SAE gate: fire when one of the selected features exceeds a threshold."""
     idx = torch.as_tensor(feature_indices, dtype=torch.long)
     sae_device = next(sae.parameters()).device
 
@@ -240,6 +249,7 @@ def _collect_topk_feature_activations_for_texts(
     device: str,
     max_texts: int,
 ) -> torch.Tensor:
+    """Collect token-level activations of the selected SAE features on a text subset."""
     sae_device = next(sae.parameters()).device
     idx = torch.as_tensor(feature_indices, dtype=torch.long, device=sae_device)
     rows = []
@@ -266,6 +276,7 @@ def learn_linear_sae_gate(
     lr: float = 0.1,
     weight_decay: float = 1e-4,
 ) -> tuple[torch.Tensor, float]:
+    """Fit a small logistic gate from top-k SAE activations with source-vs-other labels."""
     if pos_features.numel() == 0 or neg_features.numel() == 0:
         raise ValueError("Need both positive and negative SAE activations to learn a gate.")
 
@@ -298,6 +309,7 @@ def learn_linear_sae_gate(
 
 
 def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: float):
+    """Create a soft gate from learned top-k SAE weights and a sigmoid output."""
     idx = torch.as_tensor(feature_indices, dtype=torch.long)
     weight = torch.as_tensor(weight, dtype=torch.float32)
     bias_value = float(bias)
@@ -333,6 +345,7 @@ def _source_target_ce_with_patch(
     device: str,
     patch_specs,
 ):
+    """Evaluate the target-language CE objective for one patched LID prompt."""
     ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
     attention_mask = torch.ones_like(ids)
     target_ids = tokenizer.encode(" " + target_word, add_special_tokens=False)
@@ -352,6 +365,7 @@ def _collateral_lm_ce_with_patch(
     device: str,
     patch_specs,
 ):
+    """Evaluate collateral LM CE on one text under a patched model."""
     ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
     attention_mask = torch.ones_like(ids)
     labels = ids.clone()
@@ -377,6 +391,7 @@ def optimize_learned_sae_gate_for_layer(
     lr: float = 0.1,
     collateral_weight: float = 0.2,
 ) -> tuple[torch.Tensor, float]:
+    """Optimize a learned soft gate directly against target and collateral CE objectives."""
     for param in model.parameters():
         param.requires_grad_(False)
     for param in sae.parameters():
@@ -425,6 +440,7 @@ def measure_sae_gate_activation_rate(
     sae_dtype: torch.dtype | None = None,
     threshold: float = 0.0,
 ) -> float:
+    """Estimate how often a heuristic SAE gate fires on a small text sample."""
     if not texts:
         return math.nan
 
@@ -490,6 +506,7 @@ def build_sv_bank_and_gates(
     cache_metadata: dict | None = None,
     gate_topk: int = 2,
 ):
+    """Build and optionally cache steering vectors plus heuristic source-feature gates per layer."""
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, List[int]] = {}
     source_lang_idx = target_lan.index(source_lang)
@@ -584,6 +601,7 @@ def build_learned_gate_bank(
     learned_lr: float = 0.1,
     learned_collateral_weight: float = 0.2,
 ) -> Dict[int, Dict[str, object]]:
+    """Train and optionally cache learned SAE gates for each layer in the intervention window."""
     learned_gate_bank: Dict[int, Dict[str, object]] = {}
     cache_dir = Path(cache_dir) if cache_dir is not None else None
     cache_metadata = cache_metadata or {}
@@ -654,6 +672,7 @@ def build_learned_gate_bank(
 
 
 def target_token_ce_from_prompt(model, tokenizer, prompt: str, target_word: str, device: str, patch_specs=None) -> float:
+    """Compute CE on the first token of the target language label for one prompt."""
     ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
     if ids.size(1) < 1:
         return math.nan
@@ -684,6 +703,7 @@ def target_label_ce_from_prompt(
     patch_specs=None,
     reduction: str = "mean",
 ) -> float:
+    """Compute autoregressive CE over the full target label appended to the prompt."""
     prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
     label_ids = tokenizer.encode(" " + target_word, add_special_tokens=False)
     if not label_ids:
@@ -720,6 +740,7 @@ def target_label_ce_from_prompt(
 
 
 def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=None) -> float:
+    """Compute standard language-model CE on one raw text, with optional steering patches."""
     ids = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
     if ids.size(1) < 2:
         return math.nan
@@ -737,6 +758,7 @@ def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=Non
 
 
 def set_generation_seed(seed: int = 0):
+    """Synchronize Python, NumPy, and Torch RNGs for deterministic generation."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -756,6 +778,7 @@ def generate_continuation(
     use_cache_when_patched: bool = False,
     **gen_kwargs,
 ) -> str:
+    """Generate a continuation from a prompt, optionally under steering hooks."""
     ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
     attention_mask = torch.ones_like(ids)
 
@@ -782,14 +805,17 @@ def generate_continuation(
 
 
 def first_n_words(text: str, n_words: int = 20) -> str:
+    """Keep only the first n_words words of a text snippet."""
     return " ".join(text.strip().split()[:n_words])
 
 
 def nanmean(values) -> float:
+    """Mean helper that gracefully handles empty lists and NaNs."""
     return float(np.nanmean(values)) if values else float("nan")
 
 
 def build_lid_prompt(text: str) -> str:
+    """Build the one-word language identification prompt used in the LID task."""
     return (
         "Identify the language of the following text in one word.\n"
         f"Text: {text}\n"
@@ -798,6 +824,7 @@ def build_lid_prompt(text: str) -> str:
 
 
 def build_cont_prompt(text: str, target_lang_name: str) -> str:
+    """Build the continuation prompt used in the cross-lingual continuation task."""
     return (
         f"Continue the following text in {target_lang_name}.\n"
         f"Text: {text}\n"
@@ -806,6 +833,7 @@ def build_cont_prompt(text: str, target_lang_name: str) -> str:
 
 
 def normalize_openlid_label(label: str) -> str:
+    """Normalize OpenLID labels back to the repo's short language-code format."""
     label = label.lower().replace("__label__", "")
     if label in LANG_CODE_TO_NAME:
         return label
