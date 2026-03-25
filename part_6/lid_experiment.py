@@ -14,6 +14,7 @@ from matplotlib.lines import Line2D
 from part_6.steering_utils import (
     build_lid_prompt,
     build_patch_specs,
+    build_learned_gate_bank,
     build_sv_bank_and_gates,
     lm_ce_loss_on_text,
     measure_sae_gate_activation_rate,
@@ -174,9 +175,14 @@ def main():
         ("SAE-1L", 1),
         ("SAE-2L", 2),
         ("SAE-3L", 3),
+        ("Learned-1L", 1),
+        ("Learned-2L", 2),
+        ("Learned-3L", 3),
     ]
 
-    total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (2 * args.train_n + len(TARGET_LANGS) * args.train_n)
+    total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (
+        2 * args.train_n + 2 * len(TARGET_LANGS) * args.train_n
+    )
     total_eval_steps = len(methods) * (args.eval_n + (len(TARGET_LANGS) - 1) * other_eval_n)
     overall_pbar = tqdm.tqdm(total=total_bank_steps + total_eval_steps, desc="LID pipeline", unit="text")
 
@@ -214,6 +220,33 @@ def main():
             "target_lan": TARGET_LANGS,
         },
         gate_topk=args.gate_topk,
+    )
+    learned_gate_bank = build_learned_gate_bank(
+        window,
+        model,
+        tokenizer,
+        TARGET_LANGS,
+        multilingual_texts,
+        args.source_lang,
+        sae_release,
+        device,
+        args.train_n,
+        gate_bank,
+        sae_device=sae_device,
+        sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+        cache_dir=cache_dir,
+        cache_metadata={
+            "model_path": str(Path(model_path).resolve()),
+            "dataset_path": str(Path(args.dataset_path).resolve()),
+            "source_lang": args.source_lang,
+            "target_lang": args.target_lang,
+            "base_layer": args.base_layer,
+            "train_n": args.train_n,
+            "sae_release": sae_release,
+            "target_lan": TARGET_LANGS,
+            "gate_topk": args.gate_topk,
+        },
+        progress_callback=lambda: step_progress("building learned gates"),
     )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
@@ -309,6 +342,7 @@ def main():
             model,
             sv_bank,
             gate_bank,
+            learned_gate_bank=learned_gate_bank,
             alpha=args.alpha,
             sae_release=sae_release,
             sae_device=sae_device,
@@ -352,10 +386,16 @@ def main():
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.png"
     df.to_csv(csv_path, index=False)
 
-    # Match the notebook/paper convention: SAE in green, SV in blue, No SV in red.
-    plot_order = ["SAE-1L", "SAE-2L", "SAE-3L", "SV-1L", "SV-2L", "SV-3L", "No SV"]
+    # Match the notebook/paper convention: SAE in green, SV in blue, Learned in orange, No SV in red.
+    plot_order = [
+        "SAE-1L", "SAE-2L", "SAE-3L",
+        "Learned-1L", "Learned-2L", "Learned-3L",
+        "SV-1L", "SV-2L", "SV-3L",
+        "No SV",
+    ]
     plot_df = df.set_index("method").loc[plot_order].reset_index()
     sae_df = plot_df[plot_df["method"].str.startswith("SAE")].sort_values("k")
+    learned_df = plot_df[plot_df["method"].str.startswith("Learned")].sort_values("k")
     sv_df = plot_df[plot_df["method"].str.startswith("SV")].sort_values("k")
     no_sv_df = plot_df[plot_df["method"] == "No SV"]
 
@@ -363,12 +403,22 @@ def main():
 
     plt.figure(figsize=(8, 6))
     plt.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", linewidth=1.6)
+    plt.plot(learned_df["ce_non_target_langs"], learned_df["ce_target_token"], color="orange", linewidth=1.6)
     plt.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", linewidth=1.6)
     for _, row in sae_df.iterrows():
         plt.scatter(
             row["ce_non_target_langs"],
             row["ce_target_token"],
             color="green",
+            marker=marker_map.get(int(row["k"]), "o"),
+            s=70,
+            zorder=3,
+        )
+    for _, row in learned_df.iterrows():
+        plt.scatter(
+            row["ce_non_target_langs"],
+            row["ce_target_token"],
+            color="orange",
             marker=marker_map.get(int(row["k"]), "o"),
             s=70,
             zorder=3,
@@ -392,6 +442,7 @@ def main():
     plt.grid(True, alpha=0.3)
     legend_handles = [
         Line2D([0], [0], color="green", linewidth=1.6, label="SAE"),
+        Line2D([0], [0], color="orange", linewidth=1.6, label="Learned"),
         Line2D([0], [0], color="blue", linewidth=1.6, label="SV"),
         Line2D([0], [0], color="red", marker="D", linestyle="None", markersize=8, label="No SV"),
         Line2D([0], [0], color="black", marker="o", linestyle="None", markersize=7, label="1L"),

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from huggingface_hub import HfApi
 from sae_lens import SAE
 
-from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer
+from utils import LANG_CODE_TO_NAME, compute_top_index_per_lan_for_layer, gather_residual_activations
 
 
 def get_layer_module(model, layer_idx: int):
@@ -121,6 +121,7 @@ def build_patch_specs(
     model,
     sv_bank,
     gate_bank,
+    learned_gate_bank=None,
     alpha: float = 1.0,
     sae_release: str | None = None,
     sae_device: str | None = None,
@@ -135,10 +136,7 @@ def build_patch_specs(
         if layer_idx not in sv_bank:
             continue
         gate_fn = None
-        if method_name.startswith("SAE"):
-            feature_indices = gate_bank.get(layer_idx)
-            if feature_indices is None:
-                continue
+        if method_name.startswith("SAE") or method_name.startswith("Learned"):
             if sae_release is None:
                 raise ValueError("sae_release is required to build SAE-gated patch specs.")
             sae = try_load_sae_for_layer(
@@ -147,7 +145,23 @@ def build_patch_specs(
                 sae_device or next(model.parameters()).device.type,
                 dtype=sae_dtype,
             )
-            gate_fn = make_sae_gate_fn(sae, feature_indices, threshold=gate_threshold)
+            if method_name.startswith("Learned"):
+                if learned_gate_bank is None:
+                    raise ValueError("learned_gate_bank is required to build learned-gate patch specs.")
+                learned_payload = learned_gate_bank.get(layer_idx)
+                if learned_payload is None:
+                    continue
+                gate_fn = make_learned_sae_gate_fn(
+                    sae,
+                    learned_payload["feature_indices"],
+                    learned_payload["weight"],
+                    learned_payload["bias"],
+                )
+            else:
+                feature_indices = gate_bank.get(layer_idx)
+                if feature_indices is None:
+                    continue
+                gate_fn = make_sae_gate_fn(sae, feature_indices, threshold=gate_threshold)
         specs.append((layer_idx, alpha * sv_bank[layer_idx], gate_fn))
     return specs
 
@@ -212,6 +226,88 @@ def make_sae_gate_fn(sae, feature_indices, threshold: float = 0.0):
         acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
         picked = acts[..., idx.to(acts.device)]
         return (picked > threshold).any(dim=-1, keepdim=True).to(hidden_states.dtype)
+
+    return gate_fn
+
+
+def _collect_topk_feature_activations_for_texts(
+    model,
+    tokenizer,
+    sae,
+    layer_idx: int,
+    texts: List[str],
+    feature_indices: List[int],
+    device: str,
+    max_texts: int,
+) -> torch.Tensor:
+    sae_device = next(sae.parameters()).device
+    idx = torch.as_tensor(feature_indices, dtype=torch.long, device=sae_device)
+    rows = []
+    with torch.no_grad():
+        for text in texts[:max_texts]:
+            inputs = tokenizer.encode(text, return_tensors="pt", add_special_tokens=True).to(device)
+            target_act = gather_residual_activations(model, layer_idx, inputs)
+            acts = sae.encode(target_act.to(device=sae_device, dtype=torch.float32))
+            picked = acts[..., idx]
+            picked = picked.reshape(-1, picked.size(-1))
+            if picked.size(0) > 1:
+                picked = picked[1:]
+            rows.append(picked.detach().cpu())
+    if not rows:
+        return torch.empty((0, len(feature_indices)), dtype=torch.float32)
+    return torch.cat(rows, dim=0)
+
+
+def learn_linear_sae_gate(
+    pos_features: torch.Tensor,
+    neg_features: torch.Tensor,
+    *,
+    epochs: int = 200,
+    lr: float = 0.1,
+    weight_decay: float = 1e-4,
+) -> tuple[torch.Tensor, float]:
+    if pos_features.numel() == 0 or neg_features.numel() == 0:
+        raise ValueError("Need both positive and negative SAE activations to learn a gate.")
+
+    x = torch.cat([pos_features, neg_features], dim=0).to(torch.float32)
+    y = torch.cat(
+        [
+            torch.ones(pos_features.size(0), 1, dtype=torch.float32),
+            torch.zeros(neg_features.size(0), 1, dtype=torch.float32),
+        ],
+        dim=0,
+    )
+
+    mean = x.mean(dim=0, keepdim=True)
+    std = x.std(dim=0, keepdim=True).clamp_min(1e-6)
+    x_norm = (x - mean) / std
+
+    w = torch.zeros((x_norm.size(1), 1), dtype=torch.float32, requires_grad=True)
+    b = torch.zeros((1,), dtype=torch.float32, requires_grad=True)
+    optimizer = torch.optim.AdamW([w, b], lr=lr, weight_decay=weight_decay)
+    for _ in range(epochs):
+        logits = x_norm @ w + b
+        loss = F.binary_cross_entropy_with_logits(logits, y)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    w_eff = (w.detach().squeeze(-1) / std.squeeze(0)).cpu()
+    b_eff = float((b.detach() - (mean / std) @ w.detach()).item())
+    return w_eff, b_eff
+
+
+def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: float):
+    idx = torch.as_tensor(feature_indices, dtype=torch.long)
+    weight = torch.as_tensor(weight, dtype=torch.float32)
+    bias_value = float(bias)
+    sae_device = next(sae.parameters()).device
+
+    def gate_fn(hidden_states):
+        acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
+        picked = acts[..., idx.to(acts.device)]
+        logits = picked @ weight.to(acts.device) + bias_value
+        return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
 
     return gate_fn
 
@@ -362,6 +458,88 @@ def build_sv_bank_and_gates(
             memory_report_fn(f"After layer {layer_idx} bank/gate build")
 
     return sv_bank, gate_bank
+
+
+def build_learned_gate_bank(
+    window_layers_to_use: Iterable[int],
+    model,
+    tokenizer,
+    target_lan: List[str],
+    multilingual_texts: List[str],
+    source_lang: str,
+    release: str,
+    device: str,
+    train_n: int,
+    feature_bank: Dict[int, List[int]],
+    sae_device: str | None = None,
+    sae_dtype: torch.dtype | None = None,
+    cache_dir: str | Path | None = None,
+    cache_metadata: dict | None = None,
+    progress_callback=None,
+) -> Dict[int, Dict[str, object]]:
+    learned_gate_bank: Dict[int, Dict[str, object]] = {}
+    cache_dir = Path(cache_dir) if cache_dir is not None else None
+    cache_metadata = cache_metadata or {}
+    if cache_dir is not None:
+        (cache_dir / "learned_gate").mkdir(parents=True, exist_ok=True)
+
+    block_size = len(multilingual_texts) // len(target_lan)
+    source_idx = target_lan.index(source_lang)
+    pos_texts = multilingual_texts[source_idx * block_size : (source_idx + 1) * block_size][:train_n]
+    neg_texts = []
+    for i, _lan in enumerate(target_lan):
+        if i == source_idx:
+            continue
+        neg_texts.extend(multilingual_texts[i * block_size : (i + 1) * block_size][:train_n])
+
+    for layer_idx in window_layers_to_use:
+        feature_indices = feature_bank.get(layer_idx)
+        if feature_indices is None:
+            continue
+        cache_path = None
+        if cache_dir is not None:
+            cache_path = _cache_file(
+                cache_dir,
+                "learned_gate",
+                _stable_cache_key("learned_gate", {**cache_metadata, "feature_indices": feature_indices}, layer_idx),
+                layer_idx,
+            )
+        if cache_path is not None and cache_path.exists():
+            payload = torch.load(cache_path, map_location="cpu", weights_only=True)
+            learned_gate_bank[layer_idx] = payload
+            if progress_callback is not None:
+                for _ in range(len(target_lan) * train_n):
+                    progress_callback()
+            continue
+
+        sae = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
+        pos_features = _collect_topk_feature_activations_for_texts(
+            model, tokenizer, sae, layer_idx, pos_texts, feature_indices, device, max_texts=train_n
+        )
+        if progress_callback is not None:
+            for _ in range(len(pos_texts)):
+                progress_callback()
+        neg_features = _collect_topk_feature_activations_for_texts(
+            model, tokenizer, sae, layer_idx, neg_texts, feature_indices, device, max_texts=len(neg_texts)
+        )
+        if progress_callback is not None:
+            for _ in range(len(neg_texts)):
+                progress_callback()
+        weight, bias = learn_linear_sae_gate(pos_features, neg_features)
+        payload = {
+            "feature_indices": list(feature_indices),
+            "weight": weight.cpu(),
+            "bias": float(bias),
+        }
+        learned_gate_bank[layer_idx] = payload
+        if cache_path is not None:
+            torch.save(payload, cache_path)
+        del sae
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+    return learned_gate_bank
 
 
 def target_token_ce_from_prompt(model, tokenizer, prompt: str, target_word: str, device: str, patch_specs=None) -> float:
