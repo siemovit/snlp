@@ -109,6 +109,16 @@ def parse_args():
     parser.add_argument("--eval-n", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=48)
     parser.add_argument("--n-words-for-lid", type=int, default=20)
+    parser.add_argument(
+        "--cache-dir",
+        default=str(root / "cache"),
+        help="Directory used to cache per-layer steering vectors and top-index tensors.",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable loading/saving the local cache for sv_bank and top_idx_layer.",
+    )
     return parser.parse_args()
 
 
@@ -118,6 +128,7 @@ def main():
         repo_root(), args.model_name, args.model_path, args.sae_release
     )
     model_file_tag = model_tag(args.model_name, model_path)
+    cache_dir = None if args.no_cache else Path(args.cache_dir)
     device = get_device()
     results_dir = ensure_dir(repo_root() / "results")
     csv_dir = ensure_dir(results_dir / "csv")
@@ -162,6 +173,17 @@ def main():
             sae_release,
             device,
             args.train_n,
+            cache_dir=cache_dir,
+            cache_metadata={
+                "model_path": str(Path(model_path).resolve()),
+                "dataset_path": str(Path(args.dataset_path).resolve()),
+                "source_lang": source_lang,
+                "target_lang": args.target_lang,
+                "base_layer": args.base_layer,
+                "train_n": args.train_n,
+                "sae_release": sae_release,
+                "target_lan": TARGET_LANGS,
+            },
             gate_topk=args.gate_topk,
         )
 
