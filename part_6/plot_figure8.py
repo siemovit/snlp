@@ -24,14 +24,14 @@ def parse_args():
     )
     parser.add_argument(
         "--output",
-        default=str(root / "results" / "plots" / "figure8_subplot.png"),
-        help="Output PNG path.",
+        default=None,
+        help="Optional output PNG path. Defaults to results/plots/<csv-dir-name>_subplot.png",
     )
     return parser.parse_args()
 
 
 def _extract_langs_from_name(path: Path) -> tuple[str, str]:
-    match = re.search(r"_([a-z]+)_to_([a-z]+)_alpha", path.name)
+    match = re.search(r"_([a-z]+)_to_([a-z]+)_(?:layer\d+_)?alpha", path.name)
     if not match:
         raise ValueError(f"Could not parse source/target language from filename: {path.name}")
     return match.group(1), match.group(2)
@@ -41,13 +41,19 @@ def _plot_one_panel(ax, csv_path: Path) -> None:
     df = pd.read_csv(csv_path)
     source_lang, _target_lang = _extract_langs_from_name(csv_path)
 
-    plot_order = ["SAE-1L", "SAE-2L", "SAE-3L", "SV-1L", "SV-2L", "SV-3L", "No SV"]
+    plot_order = ["SAE-1L", "SAE-2L", "SAE-3L"]
+    if any(df["method"].astype(str).str.startswith("Learned")):
+        plot_order.extend(["Learned-1L", "Learned-2L", "Learned-3L"])
+    plot_order.extend(["SV-1L", "SV-2L", "SV-3L", "No SV"])
     plot_df = df.set_index("method").loc[plot_order].reset_index()
     sae_df = plot_df[plot_df["method"].str.startswith("SAE")].sort_values("k")
+    learned_df = plot_df[plot_df["method"].str.startswith("Learned")].sort_values("k")
     sv_df = plot_df[plot_df["method"].str.startswith("SV")].sort_values("k")
     no_sv_df = plot_df[plot_df["method"] == "No SV"]
 
     ax.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", linewidth=1.6)
+    if not learned_df.empty:
+        ax.plot(learned_df["ce_non_target_langs"], learned_df["ce_target_token"], color="orange", linewidth=1.6)
     ax.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", linewidth=1.6)
 
     for _, row in sae_df.iterrows():
@@ -64,6 +70,15 @@ def _plot_one_panel(ax, csv_path: Path) -> None:
             row["ce_non_target_langs"],
             row["ce_target_token"],
             color="blue",
+            marker=MARKER_MAP.get(int(row["k"]), "o"),
+            s=70,
+            zorder=3,
+        )
+    for _, row in learned_df.iterrows():
+        ax.scatter(
+            row["ce_non_target_langs"],
+            row["ce_target_token"],
+            color="orange",
             marker=MARKER_MAP.get(int(row["k"]), "o"),
             s=70,
             zorder=3,
@@ -100,7 +115,10 @@ def main():
         raise ValueError(f"Expected exactly 4 CSV files in {csv_dir}, found {len(csv_paths)}.")
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    has_learned = False
     for ax, csv_path in zip(axes.flat, csv_paths):
+        df = pd.read_csv(csv_path)
+        has_learned = has_learned or any(df["method"].astype(str).str.startswith("Learned"))
         _plot_one_panel(ax, csv_path)
 
     legend_handles = [
@@ -111,10 +129,12 @@ def main():
         Line2D([0], [0], color="black", marker="^", linestyle="None", markersize=7, label="2L"),
         Line2D([0], [0], color="black", marker="s", linestyle="None", markersize=7, label="3L"),
     ]
-    fig.legend(handles=legend_handles, ncol=3, loc="lower center", bbox_to_anchor=(0.5, 0.02))
-    plt.tight_layout(rect=(0, 0.07, 1, 1))
+    if has_learned:
+        legend_handles.insert(1, Line2D([0], [0], color="orange", linewidth=1.6, label="Learned"))
+    fig.legend(handles=legend_handles, ncol=len(legend_handles), loc="lower center", bbox_to_anchor=(0.5, 0.02))
+    plt.tight_layout(rect=(0, 0.06, 1, 1))
 
-    output = Path(args.output)
+    output = Path(args.output) if args.output else repo_root() / "results" / "plots" / f"{csv_dir.name}_subplot.png"
     ensure_dir(output.parent)
     plt.savefig(output, dpi=200)
     plt.close(fig)
