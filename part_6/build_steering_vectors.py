@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import tqdm
 
-from part_6.steering_utils import compute_steering_vector, num_layers
+from part_6.steering_utils import compute_steering_vector
 from utils import (
     MODEL_PRESETS,
     TARGET_LANGS,
@@ -36,6 +36,13 @@ def parse_args():
         default=None,
         help="Optional list of source languages. Defaults to all TARGET_LANGS except target-lang.",
     )
+    parser.add_argument(
+        "--layers",
+        nargs="+",
+        type=int,
+        default=[20, 21, 22],
+        help="List of layer indices for which steering vectors are computed and stored.",
+    )
     parser.add_argument("--train-n", type=int, default=100)
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="cuda")
     parser.add_argument("--dtype", choices=["auto", "float32", "float16", "bfloat16"], default="bfloat16")
@@ -63,7 +70,7 @@ def main():
     if len(target_texts) < args.train_n:
         raise ValueError(f"Target language {args.target_lang} has only {len(target_texts)} texts, expected {args.train_n}.")
 
-    layers = list(range(num_layers(model)))
+    layers = sorted(dict.fromkeys(args.layers))
     for source_lang in source_langs:
         source_texts = lang_texts[source_lang][: args.train_n]
         if len(source_texts) < args.train_n:
@@ -90,7 +97,7 @@ def main():
                 "source_lang": source_lang,
                 "target_lang": args.target_lang,
                 "train_n": args.train_n,
-                "num_layers": len(layers),
+                "layers": layers,
             },
             "sv_bank": sv_bank,
         }
