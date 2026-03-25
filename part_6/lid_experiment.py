@@ -16,7 +16,7 @@ from part_6.steering_utils import (
     build_patch_specs,
     build_learned_gate_bank,
     build_sv_bank_and_gates,
-    lm_ce_loss_on_text,
+    lm_ce_loss_on_texts_batched,
     measure_sae_gate_activation_rate,
     target_label_ce_from_prompt,
     target_token_ce_from_prompt,
@@ -103,6 +103,12 @@ def parse_args():
         type=int,
         default=None,
         help="Optional cap for collateral evaluation samples per non-source language. Defaults to --eval-n.",
+    )
+    parser.add_argument(
+        "--collateral-batch-size",
+        type=int,
+        default=1,
+        help="Micro-batch size used only for collateral LM CE evaluation on the x-axis.",
     )
     parser.add_argument(
         "--verbose-memory",
@@ -394,11 +400,15 @@ def main():
                 target_ce_fn(model, tokenizer, build_lid_prompt(text), target_word, device, patch_specs)
             )
             step_progress(f"eval {method_name} source")
-        ce_other = []
-        for text in other_non_target:
-            ce_other.append(
-                lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs)
-            )
+        ce_other = lm_ce_loss_on_texts_batched(
+            model,
+            tokenizer,
+            other_non_target,
+            device,
+            patch_specs,
+            batch_size=args.collateral_batch_size,
+        )
+        for _ in ce_other:
             step_progress(f"eval {method_name} collateral")
         rows.append(
             {

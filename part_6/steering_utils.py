@@ -794,6 +794,57 @@ def lm_ce_loss_on_text(model, tokenizer, text: str, device: str, patch_specs=Non
     return float(out.loss.item())
 
 
+def lm_ce_loss_on_texts_batched(
+    model,
+    tokenizer,
+    texts: List[str],
+    device: str,
+    patch_specs=None,
+    batch_size: int = 1,
+) -> List[float]:
+    """Compute per-text LM CE with micro-batching while preserving the single-text metric."""
+    if batch_size <= 1:
+        return [lm_ce_loss_on_text(model, tokenizer, text, device, patch_specs) for text in texts]
+
+    all_losses: List[float] = []
+    for start in range(0, len(texts), batch_size):
+        batch_texts = texts[start : start + batch_size]
+        enc = tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding=True,
+            add_special_tokens=True,
+        )
+        ids = enc["input_ids"].to(device)
+        attention_mask = enc["attention_mask"].to(device)
+        labels = ids.clone()
+        labels[:, 0] = -100
+        labels = labels.masked_fill(attention_mask == 0, -100)
+
+        with torch.no_grad():
+            if patch_specs:
+                with apply_layer_patches(model, patch_specs):
+                    out = model(ids, attention_mask=attention_mask)
+            else:
+                out = model(ids, attention_mask=attention_mask)
+
+        shift_logits = out.logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        token_losses = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            reduction="none",
+            ignore_index=-100,
+        ).view(shift_labels.shape)
+        valid = (shift_labels != -100).to(token_losses.dtype)
+        per_example_denom = valid.sum(dim=1).clamp_min(1.0)
+        per_example_total = (token_losses * valid).sum(dim=1)
+        batch_losses = (per_example_total / per_example_denom).detach().cpu().tolist()
+        all_losses.extend(float(v) for v in batch_losses)
+
+    return all_losses
+
+
 def set_generation_seed(seed: int = 0):
     """Synchronize Python, NumPy, and Torch RNGs for deterministic generation."""
     random.seed(seed)
