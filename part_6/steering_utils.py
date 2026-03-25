@@ -460,9 +460,9 @@ def optimize_learned_sae_gate_for_layer(
                 gate_src = math.nan
                 gate_other = math.nan
                 if pos_features.numel() > 0:
-                    gate_src = torch.sigmoid(pos_features.to(weight.device) @ weight + bias).mean().item()
+                    gate_src = torch.sigmoid(pos_features.to(weight.device, dtype=torch.float32) @ weight + bias).mean().item()
                 if neg_features.numel() > 0:
-                    gate_other = torch.sigmoid(neg_features.to(weight.device) @ weight + bias).mean().item()
+                    gate_other = torch.sigmoid(neg_features.to(weight.device, dtype=torch.float32) @ weight + bias).mean().item()
             pbar.set_postfix_str(
                 f"epoch={epoch_idx + 1}/{total_epochs} loss={loss.item():.4f} src={source_term.item():.4f} other={other_term.item():.4f} gate_src={gate_src:.3f} gate_other={gate_other:.3f}"
             )
