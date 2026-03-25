@@ -305,8 +305,8 @@ def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: f
 
     def gate_fn(hidden_states):
         acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
-        picked = acts[..., idx.to(acts.device)]
-        logits = picked @ weight.to(acts.device) + bias_value
+        picked = acts[..., idx.to(acts.device)].to(torch.float32)
+        logits = picked @ weight.to(acts.device, dtype=torch.float32) + bias_value
         return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
 
     return gate_fn
