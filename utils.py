@@ -42,10 +42,12 @@ MODEL_PRESETS = {
 
 
 def repo_root() -> Path:
+    """Return the repository root used by the experiment scripts."""
     return Path(__file__).resolve().parent
 
 
 def ensure_dir(path: Path | str) -> Path:
+    """Create a directory if needed and return it as a Path."""
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -57,6 +59,7 @@ def resolve_model_artifacts(
     model_path: str | None = None,
     sae_release: str | None = None,
 ) -> tuple[str, str, str]:
+    """Resolve the display label, local model path, and SAE release for a preset or override."""
     if model_name not in MODEL_PRESETS:
         raise ValueError(f"Unsupported model_name: {model_name}. Expected one of {sorted(MODEL_PRESETS)}.")
     preset = MODEL_PRESETS[model_name]
@@ -66,6 +69,7 @@ def resolve_model_artifacts(
 
 
 def model_tag(model_name: str, model_path: str) -> str:
+    """Build a filesystem-friendly model tag for result filenames."""
     if model_name in MODEL_PRESETS:
         return MODEL_PRESETS[model_name]["model_dir"]
     candidate = Path(model_path).name.strip().lower()
@@ -74,6 +78,7 @@ def model_tag(model_name: str, model_path: str) -> str:
 
 
 def get_device() -> str:
+    """Return the best available runtime device without any safety overrides."""
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -82,6 +87,7 @@ def get_device() -> str:
 
 
 def get_safe_default_device() -> str:
+    """Prefer CUDA when available and avoid defaulting to MPS on macOS."""
     if torch.cuda.is_available():
         return "cuda"
     if platform.system() == "Darwin":
@@ -96,6 +102,7 @@ def _bytes_to_gb(value: int) -> float:
 
 
 def get_device_memory_report(device: str) -> dict | None:
+    """Collect a small CUDA memory snapshot for debug prints and guards."""
     if device == "cuda" and torch.cuda.is_available():
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         return {
@@ -109,6 +116,7 @@ def get_device_memory_report(device: str) -> dict | None:
 
 
 def print_device_memory_report(device: str, prefix: str) -> None:
+    """Pretty-print the CUDA memory snapshot returned by get_device_memory_report."""
     report = get_device_memory_report(device)
     if report is None:
         return
@@ -120,6 +128,7 @@ def print_device_memory_report(device: str, prefix: str) -> None:
 
 
 def ensure_min_free_memory(device: str, min_free_gb: float, stage: str) -> None:
+    """Abort early when a CUDA run is already too close to OOM."""
     report = get_device_memory_report(device)
     if report is None:
         return
@@ -131,6 +140,7 @@ def ensure_min_free_memory(device: str, min_free_gb: float, stage: str) -> None:
 
 
 def resolve_torch_dtype(dtype: str, device: str) -> torch.dtype:
+    """Map a CLI dtype string to the torch dtype actually used for loading."""
     if dtype == "float32":
         return torch.float32
     if dtype == "float16":
@@ -146,6 +156,7 @@ def resolve_torch_dtype(dtype: str, device: str) -> torch.dtype:
 
 
 def load_model_and_tokenizer(model_path: str | Path, device: str = "cpu", dtype: str = "auto"):
+    """Load a local causal LM checkpoint and matching tokenizer on the requested device."""
     torch_dtype = resolve_torch_dtype(dtype, device)
     model = AutoModelForCausalLM.from_pretrained(
         str(model_path),
@@ -159,6 +170,7 @@ def load_model_and_tokenizer(model_path: str | Path, device: str = "cpu", dtype:
 
 
 def load_multilingual_dataframe(dataset_path: str | Path) -> pd.DataFrame:
+    """Load one of the multilingual JSONL datasets used throughout the repo."""
     return pd.read_json(dataset_path, lines=True)
 
 
@@ -166,6 +178,7 @@ def build_language_texts(
     df: pd.DataFrame,
     target_langs: Iterable[str] = TARGET_LANGS,
 ) -> Dict[str, List[str]]:
+    """Group dataset rows into per-language text lists in the target-language order."""
     lang_texts: Dict[str, List[str]] = {}
     for code in target_langs:
         lang_texts[code] = df.loc[df["lan"] == code, "text"].tolist()
@@ -176,6 +189,7 @@ def flatten_language_texts(
     lang_texts: Dict[str, List[str]],
     target_langs: Iterable[str] = TARGET_LANGS,
 ) -> List[str]:
+    """Flatten per-language text lists while preserving language block order."""
     flat: List[str] = []
     for code in target_langs:
         flat.extend(lang_texts[code])
@@ -189,6 +203,7 @@ def build_lang_split(
     *,
     target_langs: Iterable[str] = TARGET_LANGS,
 ) -> Dict[str, Dict[str, List[str]]]:
+    """Build the paper-style per-language train/eval split with no overlap."""
     required = train_n + eval_n
     split: Dict[str, Dict[str, List[str]]] = {}
     for code in target_langs:
@@ -203,6 +218,7 @@ def build_lang_split(
 
 
 def gather_residual_activations(model, target_layer: int, inputs: torch.Tensor) -> torch.Tensor:
+    """Capture residual activations from one transformer layer for a single forward pass."""
     target_act = None
 
     def gather_target_act_hook(_mod, _inputs, outputs):
@@ -232,6 +248,7 @@ def compute_top_index_per_lan_for_layer(
     n_texts_per_lan: int = 10,
     progress_callback=None,
 ):
+    """Find the most language-specific SAE features for one layer from mean token activations."""
     block_size = len(multilingual_texts) // len(target_lan)
     avg_act_per_lan = []
     sae_device = next(sae.parameters()).device
