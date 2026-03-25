@@ -115,6 +115,11 @@ def parse_args():
         help="Directory used to cache per-layer steering vectors and top-index tensors.",
     )
     parser.add_argument(
+        "--v-scores-csv",
+        default=str(root / "results" / "csv" / "v_scores_run_reprod_fig_1_top5.csv"),
+        help="Optional CSV exported by part_6.export_v_scores.py. If present, reuse its top-k features instead of recomputing v/nu scores.",
+    )
+    parser.add_argument(
         "--no-cache",
         action="store_true",
         help="Disable loading/saving the local cache for sv_bank and top_idx_layer.",
@@ -149,6 +154,9 @@ def main():
     other_eval_n = args.other_eval_n if args.other_eval_n is not None else args.eval_n
     split_eval_n = max(args.eval_n, other_eval_n)
     cache_dir = None if args.no_cache else Path(args.cache_dir)
+    v_scores_csv = Path(args.v_scores_csv) if args.v_scores_csv else None
+    if v_scores_csv is not None and not v_scores_csv.exists():
+        v_scores_csv = None
     try:
         commit_short_sha = (
             subprocess.check_output(
@@ -238,6 +246,7 @@ def main():
             "target_lan": TARGET_LANGS,
         },
         gate_topk=args.gate_topk,
+        v_scores_csv=v_scores_csv,
     )
     learned_gate_bank = None
     if args.learned_gating:
@@ -299,7 +308,7 @@ def main():
         f"target_metric={args.target_metric}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "
         f"gate_topk={args.gate_topk}, gate_threshold={args.gate_threshold}, "
-        f"learned_gating={args.learned_gating}, cache_dir={cache_dir}"
+        f"learned_gating={args.learned_gating}, cache_dir={cache_dir}, v_scores_csv={v_scores_csv}"
     )
     print(
         f"Source language: {args.source_lang} -> target language: {args.target_lang} | "

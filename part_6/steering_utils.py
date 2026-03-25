@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from huggingface_hub import HfApi
@@ -486,6 +487,34 @@ def _cache_file(cache_dir: Path, kind: str, cache_key: str, layer_idx: int) -> P
     return cache_dir / kind / f"{kind}_layer{layer_idx}_{cache_key}.pt"
 
 
+def _load_precomputed_topk_from_csv(
+    v_scores_csv: str | Path | None,
+    layer_idx: int,
+    source_lang: str,
+    gate_topk: int,
+) -> list[int] | None:
+    """Load source-language top-k feature indices from a pre-exported v-scores CSV if available."""
+    if v_scores_csv is None:
+        return None
+    csv_path = Path(v_scores_csv)
+    if not csv_path.exists():
+        return None
+
+    df = pd.read_csv(csv_path)
+    required_columns = {"layer", "language_code", "rank", "feature_index"}
+    if not required_columns.issubset(df.columns):
+        return None
+
+    layer_df = df[(df["layer"] == layer_idx) & (df["language_code"] == source_lang)].copy()
+    if layer_df.empty:
+        return None
+
+    layer_df = layer_df.sort_values("rank")
+    if len(layer_df) < gate_topk:
+        return None
+    return [int(v) for v in layer_df["feature_index"].head(gate_topk).tolist()]
+
+
 def build_sv_bank_and_gates(
     window_layers_to_use: Iterable[int],
     model,
@@ -505,6 +534,7 @@ def build_sv_bank_and_gates(
     cache_dir: str | Path | None = None,
     cache_metadata: dict | None = None,
     gate_topk: int = 2,
+    v_scores_csv: str | Path | None = None,
 ):
     """Build and optionally cache steering vectors plus heuristic source-feature gates per layer."""
     sv_bank: Dict[int, torch.Tensor] = {}
@@ -545,33 +575,40 @@ def build_sv_bank_and_gates(
             if sv_cache_path is not None:
                 torch.save(sv_bank[layer_idx].detach().cpu(), sv_cache_path)
 
-        sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
-        if top_idx_cache_path is not None and top_idx_cache_path.exists():
-            top_idx_layer = torch.load(top_idx_cache_path, map_location="cpu", weights_only=True)
+        topk_src = _load_precomputed_topk_from_csv(v_scores_csv, layer_idx, source_lang, gate_topk)
+        if topk_src is not None:
+            gate_bank[layer_idx] = topk_src
             if progress_callback is not None:
                 for _ in range(len(target_lan) * train_n):
                     progress_callback()
         else:
-            top_idx_layer, _ = compute_top_index_per_lan_for_layer(
-                model,
-                tokenizer,
-                sae_layer,
-                layer_idx,
-                target_lan,
-                multilingual_texts,
-                device,
-                n_texts_per_lan=train_n,
-                progress_callback=progress_callback,
-            )
-            if top_idx_cache_path is not None:
-                torch.save(top_idx_layer.detach().cpu(), top_idx_cache_path)
-        topk_src = top_idx_layer[source_lang_idx, :gate_topk].detach().cpu().tolist()
-        gate_bank[layer_idx] = topk_src
-        del top_idx_layer
-        del sae_layer
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+            sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
+            if top_idx_cache_path is not None and top_idx_cache_path.exists():
+                top_idx_layer = torch.load(top_idx_cache_path, map_location="cpu", weights_only=True)
+                if progress_callback is not None:
+                    for _ in range(len(target_lan) * train_n):
+                        progress_callback()
+            else:
+                top_idx_layer, _ = compute_top_index_per_lan_for_layer(
+                    model,
+                    tokenizer,
+                    sae_layer,
+                    layer_idx,
+                    target_lan,
+                    multilingual_texts,
+                    device,
+                    n_texts_per_lan=train_n,
+                    progress_callback=progress_callback,
+                )
+                if top_idx_cache_path is not None:
+                    torch.save(top_idx_layer.detach().cpu(), top_idx_cache_path)
+            topk_src = top_idx_layer[source_lang_idx, :gate_topk].detach().cpu().tolist()
+            gate_bank[layer_idx] = topk_src
+            del top_idx_layer
+            del sae_layer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
         if memory_report_fn is not None:
             memory_report_fn(f"After layer {layer_idx} bank/gate build")
 
