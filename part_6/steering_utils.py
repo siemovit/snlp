@@ -940,6 +940,21 @@ def build_cont_prompt(text: str, target_lang_name: str) -> str:
 def normalize_openlid_label(label: str) -> str:
     """Normalize OpenLID labels back to the repo's short language-code format."""
     label = label.lower().replace("__label__", "")
+    flores_to_short = {
+        "eng_latn": "en",
+        "spa_latn": "es",
+        "fra_latn": "fr",
+        "jpn_jpan": "ja",
+        "kor_hang": "ko",
+        "por_latn": "pt",
+        "tha_thai": "th",
+        "vie_latn": "vi",
+        "cmn_hans": "zh",
+        "arb_arab": "ar",
+        "ara_arab": "ar",
+    }
+    if label in flores_to_short:
+        return flores_to_short[label]
     if label in LANG_CODE_TO_NAME:
         return label
     if "_" in label:
