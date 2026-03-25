@@ -91,6 +91,12 @@ def parse_args():
         help="Where to keep SAE gates. 'cpu' is safer on small GPUs; 'same' follows --device.",
     )
     parser.add_argument("--train-n", type=int, default=20, help="Number of source/target samples per language used to build the steering bank.")
+    parser.add_argument(
+        "--gate-train-n",
+        type=int,
+        default=20,
+        help="Number of texts per language used only to estimate SAE top-features for gating.",
+    )
     parser.add_argument("--eval-n", type=int, default=10, help="Number of source-language evaluation samples.")
     parser.add_argument(
         "--min-free-gb",
@@ -209,7 +215,7 @@ def main():
         )
 
     total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (
-        2 * args.train_n + len(TARGET_LANGS) * args.train_n
+        2 * args.train_n + len(TARGET_LANGS) * args.gate_train_n
     )
     if args.learned_gating:
         total_bank_steps += len(window_layers(args.base_layer, 3, model)) * (len(TARGET_LANGS) * args.learned_train_n)
@@ -236,6 +242,7 @@ def main():
         sae_release,
         device,
         args.train_n,
+        gate_train_n=args.gate_train_n,
         sae_device=sae_device,
         sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
         memory_report_fn=(lambda msg: print_device_memory_report(device, msg)) if device == "cuda" and args.verbose_memory else None,
@@ -248,6 +255,7 @@ def main():
             "target_lang": args.target_lang,
             "base_layer": args.base_layer,
             "train_n": args.train_n,
+            "gate_train_n": args.gate_train_n,
             "sae_release": sae_release,
             "target_lan": TARGET_LANGS,
         },
@@ -309,7 +317,7 @@ def main():
     print(
         f"Running Adversarial LID with dataset={args.dataset_path}, "
         f"train_n={args.train_n}, source_eval_n={len(eval_source)}, "
-        f"other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
+        f"gate_train_n={args.gate_train_n}, other_eval_n={other_eval_n}, base_layer={args.base_layer}, alpha={args.alpha}, "
         f"model={model_label}, "
         f"target_metric={args.target_metric}, "
         f"device={device}, dtype={args.dtype}, sae_device={sae_device}, "

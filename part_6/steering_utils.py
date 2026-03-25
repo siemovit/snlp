@@ -559,6 +559,25 @@ def _load_precomputed_topk_from_csv(
     return [int(v) for v in layer_df["feature_index"].head(gate_topk).tolist()]
 
 
+def load_gate_bank_from_v_scores(
+    window_layers_to_use: Iterable[int],
+    source_lang: str,
+    gate_topk: int,
+    v_scores_csv: str | Path,
+) -> Dict[int, List[int]]:
+    """Build a gate bank directly from a pre-exported v-scores CSV."""
+    gate_bank: Dict[int, List[int]] = {}
+    for layer_idx in window_layers_to_use:
+        topk_src = _load_precomputed_topk_from_csv(v_scores_csv, layer_idx, source_lang, gate_topk)
+        if topk_src is None:
+            raise ValueError(
+                f"Could not load top-{gate_topk} features for source_lang={source_lang} at layer={layer_idx} "
+                f"from v-scores CSV: {v_scores_csv}"
+            )
+        gate_bank[layer_idx] = topk_src
+    return gate_bank
+
+
 def build_sv_bank_and_gates(
     window_layers_to_use: Iterable[int],
     model,
@@ -571,6 +590,7 @@ def build_sv_bank_and_gates(
     release: str,
     device: str,
     train_n: int,
+    gate_train_n: int | None = None,
     sae_device: str | None = None,
     sae_dtype: torch.dtype | None = None,
     memory_report_fn=None,
@@ -584,6 +604,7 @@ def build_sv_bank_and_gates(
     sv_bank: Dict[int, torch.Tensor] = {}
     gate_bank: Dict[int, List[int]] = {}
     source_lang_idx = target_lan.index(source_lang)
+    gate_train_n = train_n if gate_train_n is None else gate_train_n
     cache_dir = Path(cache_dir) if cache_dir is not None else None
     cache_metadata = cache_metadata or {}
 
@@ -623,14 +644,14 @@ def build_sv_bank_and_gates(
         if topk_src is not None:
             gate_bank[layer_idx] = topk_src
             if progress_callback is not None:
-                for _ in range(len(target_lan) * train_n):
+                for _ in range(len(target_lan) * gate_train_n):
                     progress_callback()
         else:
             sae_layer = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
             if top_idx_cache_path is not None and top_idx_cache_path.exists():
                 top_idx_layer = torch.load(top_idx_cache_path, map_location="cpu", weights_only=True)
                 if progress_callback is not None:
-                    for _ in range(len(target_lan) * train_n):
+                    for _ in range(len(target_lan) * gate_train_n):
                         progress_callback()
             else:
                 top_idx_layer, _ = compute_top_index_per_lan_for_layer(
@@ -641,7 +662,7 @@ def build_sv_bank_and_gates(
                     target_lan,
                     multilingual_texts,
                     device,
-                    n_texts_per_lan=train_n,
+                    n_texts_per_lan=gate_train_n,
                     progress_callback=progress_callback,
                 )
                 if top_idx_cache_path is not None:
