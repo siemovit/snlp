@@ -98,7 +98,7 @@ The larger file is large enough for the paper-style split:
 
 ## Run
 
-### Downloading the model
+### Step O - Downloading the model
 
 The downloader supports these presets:
 
@@ -117,9 +117,7 @@ The experiment scripts accept `--model-name` and automatically pick matching def
 
 Default base layer for SAE is 20. 
 
-## Running The Experiments
-
-### Baseline Steering Demo
+### Step 1 - Baseline Steering Demo
 
 ```bash
 uv run python -m part_6.baseline_experiment \
@@ -134,7 +132,7 @@ Output:
 
 - `results/json/baseline_qwen3-0.6b_fr_to_es_alpha20_train4_eval2.json`
 
-### Adversarial Language Identification
+### Step 2 - Adversarial Language Identification
 
 ```bash
 uv run python -m part_6.lid_experiment \
@@ -182,7 +180,7 @@ uv run python -m part_6.lid_experiment \
 uv run python -m part_6.lid_experiment --no-cache
 ```
 
-### Cross-Lingual Continuation
+### Step 3 - Cross-Lingual Continuation
 
 ```bash
 uv run python -m part_6.clc_experiment \
