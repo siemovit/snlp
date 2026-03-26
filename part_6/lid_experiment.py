@@ -16,6 +16,8 @@ from part_6.steering_utils import (
     build_patch_specs,
     build_learned_gate_bank,
     build_sv_bank_and_gates,
+    learned_gate_bank_filename,
+    load_learned_gate_bank,
     lm_ce_loss_on_texts_batched,
     measure_sae_gate_activation_rate,
     target_label_ce_from_prompt,
@@ -26,7 +28,6 @@ from utils import (
     LANG_CODE_TO_NAME,
     MODEL_PRESETS,
     TARGET_LANGS,
-    build_lang_split,
     build_language_texts,
     ensure_min_free_memory,
     ensure_dir,
@@ -72,6 +73,11 @@ def parse_args():
     parser.add_argument("--learned-epochs", type=int, default=25, help="Number of optimization epochs for the learned gate.")
     parser.add_argument("--learned-lr", type=float, default=0.1, help="Learning rate for the learned gate.")
     parser.add_argument("--learned-collateral-weight", type=float, default=0.2, help="Weight of collateral LM CE in the learned gate objective.")
+    parser.add_argument(
+        "--learned-gate-dir",
+        default=str(root / "learned_gates"),
+        help="Directory containing explicitly saved learned gate banks. If a matching file exists, load it instead of retraining.",
+    )
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
@@ -193,7 +199,17 @@ def main():
         ensure_min_free_memory(device, args.min_free_gb, "SV/gate construction")
     data = load_multilingual_dataframe(args.dataset_path)
     lang_texts = build_language_texts(data, TARGET_LANGS)
-    by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=split_eval_n, target_langs=TARGET_LANGS)
+    by_lang = {}
+    for code in TARGET_LANGS:
+        texts = lang_texts[code]
+        train_count = args.train_n if code in {args.source_lang, args.target_lang} else 0
+        required = train_count + split_eval_n
+        if len(texts) < required:
+            raise ValueError(f"Language {code} has {len(texts)} texts, expected at least {required}.")
+        by_lang[code] = {
+            "train": texts[:train_count],
+            "eval": texts[train_count : train_count + split_eval_n],
+        }
     multilingual_texts = flatten_language_texts(lang_texts, TARGET_LANGS)
 
     methods = [
@@ -264,43 +280,60 @@ def main():
     )
     learned_gate_bank = None
     if args.learned_gating:
-        learned_gate_bank = build_learned_gate_bank(
-            window,
-            model,
-            tokenizer,
-            TARGET_LANGS,
-            multilingual_texts,
+        learned_gate_path = Path(args.learned_gate_dir) / learned_gate_bank_filename(
+            model_file_tag,
             args.source_lang,
-            sae_release,
-            device,
-            args.train_n,
-            sv_bank,
-            gate_bank,
-            sae_device=sae_device,
-            sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
-            cache_dir=cache_dir,
-            cache_metadata={
-                "model_path": str(Path(model_path).resolve()),
-                "dataset_path": str(Path(args.dataset_path).resolve()),
-                "source_lang": args.source_lang,
-                "target_lang": args.target_lang,
-                "base_layer": args.base_layer,
-                "train_n": args.train_n,
-                "sae_release": sae_release,
-                "target_lan": TARGET_LANGS,
-                "gate_topk": args.gate_topk,
-                "learned_train_n": args.learned_train_n,
-                "learned_epochs": args.learned_epochs,
-                "learned_lr": args.learned_lr,
-                "learned_collateral_weight": args.learned_collateral_weight,
-            },
-            progress_callback=lambda: step_progress("building learned gates"),
-            target_word=target_word,
+            args.target_lang,
+            base_layer=args.base_layer,
+            gate_topk=args.gate_topk,
+            train_n=args.train_n,
+            gate_train_n=args.gate_train_n,
             learned_train_n=args.learned_train_n,
             learned_epochs=args.learned_epochs,
             learned_lr=args.learned_lr,
             learned_collateral_weight=args.learned_collateral_weight,
         )
+        if learned_gate_path.exists():
+            learned_gate_bank = load_learned_gate_bank(learned_gate_path)
+            print(f"Loaded learned gate bank: {learned_gate_path}")
+        else:
+            learned_gate_bank = build_learned_gate_bank(
+                window,
+                model,
+                tokenizer,
+                TARGET_LANGS,
+                multilingual_texts,
+                args.source_lang,
+                sae_release,
+                device,
+                args.train_n,
+                sv_bank,
+                gate_bank,
+                sae_device=sae_device,
+                sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+                cache_dir=cache_dir,
+                cache_metadata={
+                    "model_path": str(Path(model_path).resolve()),
+                    "dataset_path": str(Path(args.dataset_path).resolve()),
+                    "source_lang": args.source_lang,
+                    "target_lang": args.target_lang,
+                    "base_layer": args.base_layer,
+                    "train_n": args.train_n,
+                    "sae_release": sae_release,
+                    "target_lan": TARGET_LANGS,
+                    "gate_topk": args.gate_topk,
+                    "learned_train_n": args.learned_train_n,
+                    "learned_epochs": args.learned_epochs,
+                    "learned_lr": args.learned_lr,
+                    "learned_collateral_weight": args.learned_collateral_weight,
+                },
+                progress_callback=lambda: step_progress("building learned gates"),
+                target_word=target_word,
+                learned_train_n=args.learned_train_n,
+                learned_epochs=args.learned_epochs,
+                learned_lr=args.learned_lr,
+                learned_collateral_weight=args.learned_collateral_weight,
+            )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
     # and also measure collateral CE on all languages except the original/source one.
