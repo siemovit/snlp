@@ -12,6 +12,7 @@ import tqdm
 
 from part_6.steering_utils import (
     build_cont_prompt,
+    build_learned_gate_bank,
     build_patch_specs,
     build_sv_bank_and_gates,
     first_n_words,
@@ -106,6 +107,11 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--gate-topk", type=int, default=2)
     parser.add_argument("--gate-threshold", type=float, default=0.0)
+    parser.add_argument("--learned-gating", action="store_true", help="Evaluate a learned SAE gate in addition to SV-1L and SAE-3L.")
+    parser.add_argument("--learned-train-n", type=int, default=5)
+    parser.add_argument("--learned-epochs", type=int, default=25)
+    parser.add_argument("--learned-lr", type=float, default=0.1)
+    parser.add_argument("--learned-collateral-weight", type=float, default=0.2)
     parser.add_argument("--train-n", type=int, default=20)
     parser.add_argument("--eval-n", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=48)
@@ -134,19 +140,31 @@ def main():
     results_dir = ensure_dir(repo_root() / "results")
     csv_dir = ensure_dir(results_dir / "csv")
 
+    # Load the language identifier model (OpenLID-v2 by default) and the main language model, along with its tokenizer
     model, tokenizer = load_model_and_tokenizer(model_path, device=device)
     lid_predict = load_lid_predictor(args.lid_model, device)
 
-    data = load_multilingual_dataframe(args.dataset_path)
+    # Load the multilingual dataset
+    data = load_multilingual_dataframe(args.dataset_path) # this is a dataframe with columns "language" and "text"
+    
+    # Groups the dataframe by language code
     lang_texts = build_language_texts(data, TARGET_LANGS)
-    by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=args.eval_n, target_langs=TARGET_LANGS)
+    
+    # Create a non-overlapping train/eval split for each language, with the specified number of examples for training and evaluation
+    by_lang = build_lang_split(lang_texts, train_n=args.train_n, eval_n=args.eval_n, target_langs=TARGET_LANGS) # 
+    
+    # for SAE: Concatenate all per-language text lists into one single list, preserving language block order
     multilingual_texts = flatten_language_texts(lang_texts, TARGET_LANGS)
+    
+    # Determine which source languages to run on
     source_langs = args.source_langs or [code for code in TARGET_LANGS if code != args.target_lang]
 
     methods = [
         ("SV-1L", 1),
         ("SAE-3L", 3),
     ]
+    if args.learned_gating:
+        methods.append(("Learned-3L", 3))
 
     per_source_sizes = []
     for source_lang in source_langs:
@@ -187,6 +205,44 @@ def main():
             },
             gate_topk=args.gate_topk,
         )
+        learned_gate_bank = None
+        if args.learned_gating:
+            learned_gate_bank = build_learned_gate_bank(
+                window,
+                model,
+                tokenizer,
+                TARGET_LANGS,
+                multilingual_texts,
+                source_lang,
+                sae_release,
+                device,
+                args.train_n,
+                sv_bank,
+                gate_bank,
+                sae_device=device,
+                sae_dtype=next(model.parameters()).dtype if device != "cpu" else torch.float32,
+                cache_dir=cache_dir,
+                cache_metadata={
+                    "model_path": str(Path(model_path).resolve()),
+                    "dataset_path": str(Path(args.dataset_path).resolve()),
+                    "source_lang": source_lang,
+                    "target_lang": args.target_lang,
+                    "base_layer": args.base_layer,
+                    "train_n": args.train_n,
+                    "sae_release": sae_release,
+                    "target_lan": TARGET_LANGS,
+                    "gate_topk": args.gate_topk,
+                    "learned_train_n": args.learned_train_n,
+                    "learned_epochs": args.learned_epochs,
+                    "learned_lr": args.learned_lr,
+                    "learned_collateral_weight": args.learned_collateral_weight,
+                },
+                target_word=LANG_CODE_TO_NAME[args.target_lang],
+                learned_train_n=args.learned_train_n,
+                learned_epochs=args.learned_epochs,
+                learned_lr=args.learned_lr,
+                learned_collateral_weight=args.learned_collateral_weight,
+            )
 
         source_eval_texts = by_lang[source_lang]["eval"]
         non_source_texts = []
@@ -203,6 +259,7 @@ def main():
                 model,
                 sv_bank,
                 gate_bank,
+                learned_gate_bank=learned_gate_bank,
                 alpha=args.alpha,
                 sae_release=sae_release,
                 sae_device=device,

@@ -178,7 +178,17 @@ def build_language_texts(
     df: pd.DataFrame,
     target_langs: Iterable[str] = TARGET_LANGS,
 ) -> Dict[str, List[str]]:
-    """Group dataset rows into per-language text lists in the target-language order."""
+    """Group dataset rows into per-language text lists in the target-language order.
+    
+    Returns: A dict mapping language codes to lists of text examples, like:
+    
+    {
+        "en": [text1, text2, ...],
+        "es": [text1, text2, ...],
+        ...
+    }
+    
+    """
     lang_texts: Dict[str, List[str]] = {}
     for code in target_langs:
         lang_texts[code] = df.loc[df["lan"] == code, "text"].tolist()
@@ -203,7 +213,23 @@ def build_lang_split(
     *,
     target_langs: Iterable[str] = TARGET_LANGS,
 ) -> Dict[str, Dict[str, List[str]]]:
-    """Build the paper-style per-language train/eval split with no overlap."""
+    """Build the paper-style per-language train/eval split with no overlap.
+    
+    Returns: A dict mapping language codes to dicts with "train" and "eval" keys, like:
+        {
+        "en": {
+            "train": [text1, text2, ...],
+            "eval": [textA, textB, ...],
+        },
+        "fr": {
+            "train": [text3, text4, ...],
+            "eval": [textC, textD, ...],
+        },
+        ...
+        }
+            
+    
+    """
     required = train_n + eval_n
     split: Dict[str, Dict[str, List[str]]] = {}
     for code in target_langs:
