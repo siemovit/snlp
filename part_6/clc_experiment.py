@@ -37,6 +37,18 @@ from utils import (
     resolve_model_artifacts,
 )
 
+DEFAULT_ALPHA_BY_SOURCE_LANG = {
+    "es": 0.5,
+    "fr": 0.5,
+    "ja": 1.0,
+    "ko": 0.5,
+    "pt": 0.5,
+    "th": 0.5,
+    "vi": 0.5,
+    "zh": 0.5,
+    "ar": 0.5,
+}
+
 
 def load_lid_predictor(model_id: str, device: str):
     """Load OpenLID-v2 through fastText when requested, otherwise fall back to a Transformers pipeline."""
@@ -104,7 +116,12 @@ def parse_args():
     )
     parser.add_argument("--target-lang", default="en")
     parser.add_argument("--base-layer", type=int, default=20)
-    parser.add_argument("--alpha", type=float, default=0.5)
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=None,
+        help="Global steering scale. If omitted, uses a source-language-specific value from DEFAULT_ALPHA_BY_SOURCE_LANG.",
+    )
     parser.add_argument("--gate-topk", type=int, default=2)
     parser.add_argument("--gate-threshold", type=float, default=0.0)
     parser.add_argument("--learned-gating", action="store_true", help="Evaluate a learned SAE gate in addition to SV-1L and SAE-3L.")
@@ -179,6 +196,7 @@ def main():
     total_steps = sum(len(methods) * (n_source + n_other) for _, n_source, n_other in per_source_sizes)
     pbar = tqdm.tqdm(total=total_steps, desc="CLC pipeline", unit="text")
     for source_lang in source_langs:
+        alpha = args.alpha if args.alpha is not None else DEFAULT_ALPHA_BY_SOURCE_LANG.get(source_lang, 0.5)
         window = window_layers(args.base_layer, 3, model)
         sv_bank, gate_bank = build_sv_bank_and_gates(
             window,
@@ -260,7 +278,7 @@ def main():
                 sv_bank,
                 gate_bank,
                 learned_gate_bank=learned_gate_bank,
-                alpha=args.alpha,
+                alpha=alpha,
                 sae_release=sae_release,
                 sae_device=device,
                 sae_dtype=next(model.parameters()).dtype if device != "cpu" else torch.float32,
@@ -299,6 +317,7 @@ def main():
                 "target_lang": args.target_lang,
                 "method": method_name,
                 "k": k,
+                "alpha_used": alpha,
                 "success_rate": ok / max(total, 1),
                 "ce_non_source_flores10": float(pd.Series(ce_collateral).mean()),
             }
@@ -312,7 +331,8 @@ def main():
     pbar.close()
 
     df = pd.DataFrame(rows)
-    run_tag = f"alpha{args.alpha:g}_train{args.train_n}_eval{args.eval_n}"
+    alpha_tag = f"alpha{args.alpha:g}" if args.alpha is not None else "alpha-by-lang"
+    run_tag = f"{alpha_tag}_train{args.train_n}_eval{args.eval_n}"
     source_tag = "all" if args.source_langs else args.source_lang
     csv_path = csv_dir / f"clc_{model_file_tag}_{source_tag}_to_{args.target_lang}_{run_tag}.csv"
     df.to_csv(csv_path, index=False)
