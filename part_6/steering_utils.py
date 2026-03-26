@@ -564,16 +564,19 @@ def load_gate_bank_from_v_scores(
     source_lang: str,
     gate_topk: int,
     v_scores_csv: str | Path,
+    strict: bool = True,
 ) -> Dict[int, List[int]]:
     """Build a gate bank directly from a pre-exported v-scores CSV."""
     gate_bank: Dict[int, List[int]] = {}
     for layer_idx in window_layers_to_use:
         topk_src = _load_precomputed_topk_from_csv(v_scores_csv, layer_idx, source_lang, gate_topk)
         if topk_src is None:
-            raise ValueError(
-                f"Could not load top-{gate_topk} features for source_lang={source_lang} at layer={layer_idx} "
-                f"from v-scores CSV: {v_scores_csv}"
-            )
+            if strict:
+                raise ValueError(
+                    f"Could not load top-{gate_topk} features for source_lang={source_lang} at layer={layer_idx} "
+                    f"from v-scores CSV: {v_scores_csv}"
+                )
+            continue
         gate_bank[layer_idx] = topk_src
     return gate_bank
 
