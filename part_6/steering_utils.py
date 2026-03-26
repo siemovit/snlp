@@ -130,6 +130,7 @@ def build_patch_specs(
     sv_bank,
     gate_bank,
     learned_gate_bank=None,
+    thresholded_gate_bank=None,
     alpha: float = 1.0,
     sae_release: str | None = None,
     sae_device: str | None = None,
@@ -145,7 +146,7 @@ def build_patch_specs(
         if layer_idx not in sv_bank:
             continue
         gate_fn = None
-        if method_name.startswith("SAE") or method_name.startswith("Learned"):
+        if method_name.startswith("SAE") or method_name.startswith("Learned") or method_name.startswith("Thresholded"):
             if sae_release is None:
                 raise ValueError("sae_release is required to build SAE-gated patch specs.")
             sae = try_load_sae_for_layer(
@@ -165,6 +166,19 @@ def build_patch_specs(
                     learned_payload["feature_indices"],
                     learned_payload["weight"],
                     learned_payload["bias"],
+                )
+            elif method_name.startswith("Thresholded"):
+                if thresholded_gate_bank is None:
+                    raise ValueError("thresholded_gate_bank is required to build thresholded-gate patch specs.")
+                thresholded_payload = thresholded_gate_bank.get(layer_idx)
+                if thresholded_payload is None:
+                    continue
+                gate_fn = make_thresholded_sae_gate_fn(
+                    sae,
+                    thresholded_payload["feature_indices"],
+                    thresholded_payload["weight"],
+                    thresholded_payload["threshold"],
+                    thresholded_payload["bias"],
                 )
             else:
                 feature_indices = gate_bank.get(layer_idx)
@@ -326,6 +340,30 @@ def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: f
     return gate_fn
 
 
+def make_thresholded_sae_gate_fn(
+    sae,
+    feature_indices,
+    weight: torch.Tensor,
+    threshold: torch.Tensor,
+    bias: float,
+):
+    """Create a soft gate from learned per-feature thresholds and weights."""
+    idx = torch.as_tensor(feature_indices, dtype=torch.long)
+    weight = torch.as_tensor(weight, dtype=torch.float32)
+    threshold = torch.as_tensor(threshold, dtype=torch.float32)
+    bias_value = float(bias)
+    sae_device = next(sae.parameters()).device
+
+    def gate_fn(hidden_states):
+        acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
+        picked = acts[..., idx.to(acts.device)].to(torch.float32)
+        excess = torch.relu(picked - threshold.to(acts.device, dtype=torch.float32))
+        logits = excess @ weight.to(acts.device, dtype=torch.float32) + bias_value
+        return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
+
+    return gate_fn
+
+
 def _build_trainable_learned_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: torch.Tensor):
     idx = torch.as_tensor(feature_indices, dtype=torch.long)
     sae_device = next(sae.parameters()).device
@@ -334,6 +372,26 @@ def _build_trainable_learned_gate_fn(sae, feature_indices, weight: torch.Tensor,
         acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
         picked = acts[..., idx.to(acts.device)].to(torch.float32)
         logits = picked @ weight + bias
+        return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
+
+    return gate_fn
+
+
+def _build_trainable_thresholded_gate_fn(
+    sae,
+    feature_indices,
+    weight: torch.Tensor,
+    threshold: torch.Tensor,
+    bias: torch.Tensor,
+):
+    idx = torch.as_tensor(feature_indices, dtype=torch.long)
+    sae_device = next(sae.parameters()).device
+
+    def gate_fn(hidden_states):
+        acts = sae.encode(hidden_states.to(device=sae_device, dtype=torch.float32))
+        picked = acts[..., idx.to(acts.device)].to(torch.float32)
+        excess = torch.relu(picked - threshold)
+        logits = excess @ weight + bias
         return torch.sigmoid(logits).unsqueeze(-1).to(hidden_states.dtype)
 
     return gate_fn
@@ -471,6 +529,77 @@ def optimize_learned_sae_gate_for_layer(
         pbar.close()
 
     return weight.detach().cpu(), float(bias.detach().item())
+
+
+def optimize_thresholded_sae_gate_for_layer(
+    model,
+    tokenizer,
+    sae,
+    layer_idx: int,
+    feature_indices: List[int],
+    sv_vec: torch.Tensor,
+    source_texts: List[str],
+    other_texts: List[str],
+    target_word: str,
+    device: str,
+    *,
+    epochs: int = 25,
+    lr: float = 0.1,
+    collateral_weight: float = 0.2,
+    threshold_reg: float = 1e-3,
+    gate_reg: float = 1e-3,
+    progress_desc: str | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """Optimize a thresholded soft gate with learned per-feature thresholds."""
+    for param in model.parameters():
+        param.requires_grad_(False)
+    for param in sae.parameters():
+        param.requires_grad_(False)
+
+    pos_features = _collect_topk_feature_activations_for_texts(
+        model, tokenizer, sae, layer_idx, source_texts, feature_indices, device, max_texts=len(source_texts)
+    )
+    neg_features = _collect_topk_feature_activations_for_texts(
+        model, tokenizer, sae, layer_idx, other_texts, feature_indices, device, max_texts=len(other_texts)
+    )
+
+    weight = torch.ones((len(feature_indices),), device=next(sae.parameters()).device, dtype=torch.float32, requires_grad=True)
+    threshold = torch.zeros((len(feature_indices),), device=weight.device, dtype=torch.float32, requires_grad=True)
+    bias = torch.zeros((), device=weight.device, dtype=torch.float32, requires_grad=True)
+    optimizer = torch.optim.Adam([weight, threshold, bias], lr=lr)
+
+    source_prompts = [build_lid_prompt(text) for text in source_texts]
+    delta = sv_vec.detach()
+    epoch_iter = range(max(1, epochs))
+    pbar = None
+    if progress_desc is not None:
+        pbar = tqdm.tqdm(epoch_iter, desc=progress_desc, leave=False, unit="epoch")
+        epoch_iter = pbar
+    total_epochs = max(1, epochs)
+    for epoch_idx in epoch_iter:
+        optimizer.zero_grad()
+        gate_fn = _build_trainable_thresholded_gate_fn(sae, feature_indices, weight, threshold, bias)
+        patch_specs = [(layer_idx, delta, gate_fn)]
+        source_losses = [_source_target_ce_with_patch(model, tokenizer, prompt, target_word, device, patch_specs) for prompt in source_prompts]
+        other_losses = [_collateral_lm_ce_with_patch(model, tokenizer, text, device, patch_specs) for text in other_texts]
+        source_term = torch.stack(source_losses).mean()
+        other_term = torch.stack(other_losses).mean() if other_losses else torch.zeros((), device=source_term.device)
+        gate_src = torch.sigmoid((torch.relu(pos_features.to(weight.device, dtype=torch.float32) - threshold) @ weight) + bias).mean() if pos_features.numel() > 0 else torch.zeros((), device=weight.device)
+        loss = source_term + collateral_weight * other_term + threshold_reg * threshold.pow(2).mean() + gate_reg * gate_src
+        loss.backward()
+        optimizer.step()
+        if pbar is not None:
+            with torch.no_grad():
+                gate_other = math.nan
+                gate_src_value = gate_src.item() if pos_features.numel() > 0 else math.nan
+                if neg_features.numel() > 0:
+                    gate_other = torch.sigmoid((torch.relu(neg_features.to(weight.device, dtype=torch.float32) - threshold) @ weight) + bias).mean().item()
+            pbar.set_postfix_str(
+                f"epoch={epoch_idx + 1}/{total_epochs} loss={loss.item():.4f} src={source_term.item():.4f} other={other_term.item():.4f} gate_src={gate_src_value:.3f} gate_other={gate_other:.3f}"
+            )
+    if pbar is not None:
+        pbar.close()
+    return weight.detach().cpu(), threshold.detach().cpu(), float(bias.detach().item())
 
 
 def measure_sae_gate_activation_rate(
@@ -775,6 +904,98 @@ def build_learned_gate_bank(
         gc.collect()
 
     return learned_gate_bank
+
+
+def build_thresholded_gate_bank(
+    window_layers_to_use: Iterable[int],
+    model,
+    tokenizer,
+    target_lan: List[str],
+    multilingual_texts: List[str],
+    source_lang: str,
+    release: str,
+    device: str,
+    train_n: int,
+    sv_bank: Dict[int, torch.Tensor],
+    feature_bank: Dict[int, List[int]],
+    sae_device: str | None = None,
+    sae_dtype: torch.dtype | None = None,
+    cache_dir: str | Path | None = None,
+    cache_metadata: dict | None = None,
+    target_word: str | None = None,
+    thresholded_train_n: int = 5,
+    thresholded_epochs: int = 25,
+    thresholded_lr: float = 0.1,
+    thresholded_collateral_weight: float = 0.2,
+    thresholded_reg: float = 1e-3,
+) -> Dict[int, Dict[str, object]]:
+    """Train and optionally cache thresholded SAE gates for each layer."""
+    thresholded_gate_bank: Dict[int, Dict[str, object]] = {}
+    cache_dir = Path(cache_dir) if cache_dir is not None else None
+    cache_metadata = cache_metadata or {}
+    if cache_dir is not None:
+        (cache_dir / "thresholded_gate").mkdir(parents=True, exist_ok=True)
+
+    block_size = len(multilingual_texts) // len(target_lan)
+    source_idx = target_lan.index(source_lang)
+    pos_texts = multilingual_texts[source_idx * block_size : (source_idx + 1) * block_size][:thresholded_train_n]
+    neg_texts = []
+    for i, _lan in enumerate(target_lan):
+        if i == source_idx:
+            continue
+        neg_texts.extend(multilingual_texts[i * block_size : (i + 1) * block_size][:thresholded_train_n])
+    if target_word is None:
+        raise ValueError("target_word is required to build the thresholded gate bank.")
+
+    for layer_idx in window_layers_to_use:
+        feature_indices = feature_bank.get(layer_idx)
+        if feature_indices is None:
+            continue
+        cache_path = None
+        if cache_dir is not None:
+            cache_path = _cache_file(
+                cache_dir,
+                "thresholded_gate",
+                _stable_cache_key("thresholded_gate", {**cache_metadata, "feature_indices": feature_indices}, layer_idx),
+                layer_idx,
+            )
+        if cache_path is not None and cache_path.exists():
+            payload = torch.load(cache_path, map_location="cpu", weights_only=True)
+            thresholded_gate_bank[layer_idx] = payload
+            continue
+        sae = try_load_sae_for_layer(release, layer_idx, sae_device or device, dtype=sae_dtype)
+        weight, threshold, bias = optimize_thresholded_sae_gate_for_layer(
+            model,
+            tokenizer,
+            sae,
+            layer_idx,
+            feature_indices,
+            sv_vec=sv_bank[layer_idx],
+            source_texts=pos_texts,
+            other_texts=neg_texts,
+            target_word=target_word,
+            device=device,
+            epochs=thresholded_epochs,
+            lr=thresholded_lr,
+            collateral_weight=thresholded_collateral_weight,
+            threshold_reg=thresholded_reg,
+            gate_reg=thresholded_reg,
+            progress_desc=f"Thresholded gate layer {layer_idx} ({thresholded_epochs} epochs)",
+        )
+        payload = {
+            "feature_indices": list(feature_indices),
+            "weight": weight.cpu(),
+            "threshold": threshold.cpu(),
+            "bias": float(bias),
+        }
+        thresholded_gate_bank[layer_idx] = payload
+        if cache_path is not None:
+            torch.save(payload, cache_path)
+        del sae
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+    return thresholded_gate_bank
 
 
 def learned_gate_bank_filename(

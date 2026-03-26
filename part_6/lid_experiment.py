@@ -16,6 +16,7 @@ from part_6.steering_utils import (
     build_patch_specs,
     build_learned_gate_bank,
     build_sv_bank_and_gates,
+    build_thresholded_gate_bank,
     learned_gate_bank_filename,
     load_learned_gate_bank,
     lm_ce_loss_on_texts_batched,
@@ -73,6 +74,12 @@ def parse_args():
     parser.add_argument("--learned-epochs", type=int, default=25, help="Number of optimization epochs for the learned gate.")
     parser.add_argument("--learned-lr", type=float, default=0.1, help="Learning rate for the learned gate.")
     parser.add_argument("--learned-collateral-weight", type=float, default=0.2, help="Weight of collateral LM CE in the learned gate objective.")
+    parser.add_argument("--thresholded-gating", action="store_true", help="Enable the thresholded SAE gating baseline.")
+    parser.add_argument("--thresholded-train-n", type=int, default=5)
+    parser.add_argument("--thresholded-epochs", type=int, default=25)
+    parser.add_argument("--thresholded-lr", type=float, default=0.1)
+    parser.add_argument("--thresholded-collateral-weight", type=float, default=0.2)
+    parser.add_argument("--thresholded-reg", type=float, default=1e-3)
     parser.add_argument(
         "--learned-gate-dir",
         default=str(root / "learned_gates"),
@@ -229,6 +236,14 @@ def main():
                 ("Learned-3L", 3),
             ]
         )
+    if args.thresholded_gating:
+        methods.extend(
+            [
+                ("Thresholded-1L", 1),
+                ("Thresholded-2L", 2),
+                ("Thresholded-3L", 3),
+            ]
+        )
 
     total_bank_steps = len(window_layers(args.base_layer, 3, model)) * (
         2 * args.train_n + len(TARGET_LANGS) * args.gate_train_n
@@ -279,6 +294,7 @@ def main():
         v_scores_csv=v_scores_csv,
     )
     learned_gate_bank = None
+    thresholded_gate_bank = None
     if args.learned_gating:
         learned_gate_path = Path(args.learned_gate_dir) / learned_gate_bank_filename(
             model_file_tag,
@@ -334,6 +350,45 @@ def main():
                 learned_lr=args.learned_lr,
                 learned_collateral_weight=args.learned_collateral_weight,
             )
+    if args.thresholded_gating:
+        thresholded_gate_bank = build_thresholded_gate_bank(
+            window,
+            model,
+            tokenizer,
+            TARGET_LANGS,
+            multilingual_texts,
+            args.source_lang,
+            sae_release,
+            device,
+            args.train_n,
+            sv_bank,
+            gate_bank,
+            sae_device=sae_device,
+            sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+            cache_dir=cache_dir,
+            cache_metadata={
+                "model_path": str(Path(model_path).resolve()),
+                "dataset_path": str(Path(args.dataset_path).resolve()),
+                "source_lang": args.source_lang,
+                "target_lang": args.target_lang,
+                "base_layer": args.base_layer,
+                "train_n": args.train_n,
+                "sae_release": sae_release,
+                "target_lan": TARGET_LANGS,
+                "gate_topk": args.gate_topk,
+                "thresholded_train_n": args.thresholded_train_n,
+                "thresholded_epochs": args.thresholded_epochs,
+                "thresholded_lr": args.thresholded_lr,
+                "thresholded_collateral_weight": args.thresholded_collateral_weight,
+                "thresholded_reg": args.thresholded_reg,
+            },
+            target_word=target_word,
+            thresholded_train_n=args.thresholded_train_n,
+            thresholded_epochs=args.thresholded_epochs,
+            thresholded_lr=args.thresholded_lr,
+            thresholded_collateral_weight=args.thresholded_collateral_weight,
+            thresholded_reg=args.thresholded_reg,
+        )
 
     # Adversarial LID: steer source-language texts toward the target-language label,
     # and also measure collateral CE on all languages except the original/source one.
@@ -429,6 +484,7 @@ def main():
             sv_bank,
             gate_bank,
             learned_gate_bank=learned_gate_bank,
+            thresholded_gate_bank=thresholded_gate_bank,
             alpha=args.alpha,
             sae_release=sae_release,
             sae_device=sae_device,
@@ -480,10 +536,13 @@ def main():
     plot_order = ["SAE-1L", "SAE-2L", "SAE-3L"]
     if args.learned_gating:
         plot_order.extend(["Learned-1L", "Learned-2L", "Learned-3L"])
+    if args.thresholded_gating:
+        plot_order.extend(["Thresholded-1L", "Thresholded-2L", "Thresholded-3L"])
     plot_order.extend(["SV-1L", "SV-2L", "SV-3L", "No SV"])
     plot_df = df.set_index("method").loc[plot_order].reset_index()
     sae_df = plot_df[plot_df["method"].str.startswith("SAE")].sort_values("k")
     learned_df = plot_df[plot_df["method"].str.startswith("Learned")].sort_values("k")
+    thresholded_df = plot_df[plot_df["method"].str.startswith("Thresholded")].sort_values("k")
     sv_df = plot_df[plot_df["method"].str.startswith("SV")].sort_values("k")
     no_sv_df = plot_df[plot_df["method"] == "No SV"]
 
@@ -493,6 +552,8 @@ def main():
     plt.plot(sae_df["ce_non_target_langs"], sae_df["ce_target_token"], color="green", linewidth=1.6)
     if not learned_df.empty:
         plt.plot(learned_df["ce_non_target_langs"], learned_df["ce_target_token"], color="orange", linewidth=1.6)
+    if not thresholded_df.empty:
+        plt.plot(thresholded_df["ce_non_target_langs"], thresholded_df["ce_target_token"], color="purple", linewidth=1.6)
     plt.plot(sv_df["ce_non_target_langs"], sv_df["ce_target_token"], color="blue", linewidth=1.6)
     for _, row in sae_df.iterrows():
         plt.scatter(
@@ -508,6 +569,15 @@ def main():
             row["ce_non_target_langs"],
             row["ce_target_token"],
             color="orange",
+            marker=marker_map.get(int(row["k"]), "o"),
+            s=70,
+            zorder=3,
+        )
+    for _, row in thresholded_df.iterrows():
+        plt.scatter(
+            row["ce_non_target_langs"],
+            row["ce_target_token"],
+            color="purple",
             marker=marker_map.get(int(row["k"]), "o"),
             s=70,
             zorder=3,
@@ -536,6 +606,8 @@ def main():
     ]
     if args.learned_gating:
         legend_handles.insert(1, Line2D([0], [0], color="orange", linewidth=1.6, label="Learned"))
+    if args.thresholded_gating:
+        legend_handles.insert(2 if args.learned_gating else 1, Line2D([0], [0], color="purple", linewidth=1.6, label="Thresholded"))
     plt.legend(handles=legend_handles, ncol=2)
     plt.tight_layout()
     plt.savefig(fig_path, dpi=200)
