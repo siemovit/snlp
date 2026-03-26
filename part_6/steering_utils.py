@@ -777,6 +777,47 @@ def build_learned_gate_bank(
     return learned_gate_bank
 
 
+def learned_gate_bank_filename(
+    model_file_tag: str,
+    source_lang: str,
+    target_lang: str,
+    *,
+    base_layer: int,
+    gate_topk: int,
+    train_n: int,
+    gate_train_n: int,
+    learned_train_n: int,
+    learned_epochs: int,
+    learned_lr: float,
+    learned_collateral_weight: float,
+) -> str:
+    """Build a stable filename for an explicitly saved learned-gate bank."""
+    return (
+        f"learned_gate_{model_file_tag}_{source_lang}_to_{target_lang}_"
+        f"layer{base_layer}_topk{gate_topk}_train{train_n}_gtrain{gate_train_n}_"
+        f"ltrain{learned_train_n}_ep{learned_epochs}_lr{learned_lr:g}_cw{learned_collateral_weight:g}.pt"
+    )
+
+
+def save_learned_gate_bank(path: str | Path, learned_gate_bank: Dict[int, Dict[str, object]], metadata: dict | None = None) -> None:
+    """Save a learned gate bank to an explicit portable file."""
+    payload = {
+        "metadata": metadata or {},
+        "learned_gate_bank": learned_gate_bank,
+    }
+    torch.save(payload, Path(path))
+
+
+def load_learned_gate_bank(path: str | Path) -> Dict[int, Dict[str, object]]:
+    """Load a learned gate bank saved by save_learned_gate_bank."""
+    payload = torch.load(Path(path), map_location="cpu", weights_only=False)
+    if isinstance(payload, dict) and "learned_gate_bank" in payload:
+        return payload["learned_gate_bank"]
+    if isinstance(payload, dict):
+        return payload
+    raise ValueError(f"Unsupported learned gate bank format: {path}")
+
+
 def target_token_ce_from_prompt(model, tokenizer, prompt: str, target_word: str, device: str, patch_specs=None) -> float:
     """Compute CE on the first token of the target language label for one prompt."""
     ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to(device)
