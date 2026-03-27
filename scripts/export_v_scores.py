@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils import ensure_dir, repo_root
 
 
@@ -32,7 +33,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Export per-layer top-k v/nu scores from an MVA-SNLP run.")
     parser.add_argument(
         "--run-dir",
-        default=str(root.parent / "MVA-SNLP" / "v_score_runs" / "run_reprod_fig_1"),
+        default=str(root.parent / "MVA-SNLP" / "v_score_runs" / "run_reprod_fig_1_yannis"),
         help="Path to the MVA-SNLP v_score_runs/<run_name> directory.",
     )
     parser.add_argument("--top-k", type=int, default=5, help="How many top features per language to export.")

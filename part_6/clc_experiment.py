@@ -131,8 +131,8 @@ def parse_args():
     parser.add_argument("--learned-collateral-weight", type=float, default=0.2)
     parser.add_argument("--train-n", type=int, default=20)
     parser.add_argument("--eval-n", type=int, default=10)
-    parser.add_argument("--max-new-tokens", type=int, default=48)
-    parser.add_argument("--n-words-for-lid", type=int, default=20)
+    parser.add_argument("--max-new-tokens", type=int, default=24)
+    parser.add_argument("--n-words-for-lid", type=int, default=5)
     parser.add_argument(
         "--cache-dir",
         default=str(root / "cache"),

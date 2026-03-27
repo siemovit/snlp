@@ -17,8 +17,6 @@ from part_6.steering_utils import (
     build_learned_gate_bank,
     build_sv_bank_and_gates,
     build_thresholded_gate_bank,
-    learned_gate_bank_filename,
-    load_learned_gate_bank,
     lm_ce_loss_on_texts_batched,
     measure_sae_gate_activation_rate,
     target_label_ce_from_prompt,
@@ -81,11 +79,6 @@ def parse_args():
     parser.add_argument("--thresholded-collateral-weight", type=float, default=0.2)
     parser.add_argument("--thresholded-reg", type=float, default=1e-3)
     parser.add_argument(
-        "--learned-gate-dir",
-        default=str(root / "learned_gates"),
-        help="Directory containing explicitly saved learned gate banks. If a matching file exists, load it instead of retraining.",
-    )
-    parser.add_argument(
         "--device",
         choices=["auto", "cpu", "mps", "cuda"],
         default="cuda",
@@ -142,7 +135,7 @@ def parse_args():
     parser.add_argument(
         "--v-scores-csv",
         default=str(root / "results" / "csv" / "v_scores_run_reprod_fig_1_top5.csv"),
-        help="Optional CSV exported by part_6.export_v_scores.py. If present, reuse its top-k features instead of recomputing v/nu scores.",
+        help="Optional CSV exported by scripts/export_v_scores.py. If present, reuse its top-k features instead of recomputing v/nu scores.",
     )
     parser.add_argument(
         "--no-cache",
@@ -296,60 +289,43 @@ def main():
     learned_gate_bank = None
     thresholded_gate_bank = None
     if args.learned_gating:
-        learned_gate_path = Path(args.learned_gate_dir) / learned_gate_bank_filename(
-            model_file_tag,
+        learned_gate_bank = build_learned_gate_bank(
+            window,
+            model,
+            tokenizer,
+            TARGET_LANGS,
+            multilingual_texts,
             args.source_lang,
-            args.target_lang,
-            base_layer=args.base_layer,
-            gate_topk=args.gate_topk,
-            train_n=args.train_n,
-            gate_train_n=args.gate_train_n,
+            sae_release,
+            device,
+            args.train_n,
+            sv_bank,
+            gate_bank,
+            sae_device=sae_device,
+            sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
+            cache_dir=cache_dir,
+            cache_metadata={
+                "model_path": str(Path(model_path).resolve()),
+                "dataset_path": str(Path(args.dataset_path).resolve()),
+                "source_lang": args.source_lang,
+                "target_lang": args.target_lang,
+                "base_layer": args.base_layer,
+                "train_n": args.train_n,
+                "sae_release": sae_release,
+                "target_lan": TARGET_LANGS,
+                "gate_topk": args.gate_topk,
+                "learned_train_n": args.learned_train_n,
+                "learned_epochs": args.learned_epochs,
+                "learned_lr": args.learned_lr,
+                "learned_collateral_weight": args.learned_collateral_weight,
+            },
+            progress_callback=lambda: step_progress("building learned gates"),
+            target_word=target_word,
             learned_train_n=args.learned_train_n,
             learned_epochs=args.learned_epochs,
             learned_lr=args.learned_lr,
             learned_collateral_weight=args.learned_collateral_weight,
         )
-        if learned_gate_path.exists():
-            learned_gate_bank = load_learned_gate_bank(learned_gate_path)
-            print(f"Loaded learned gate bank: {learned_gate_path}")
-        else:
-            learned_gate_bank = build_learned_gate_bank(
-                window,
-                model,
-                tokenizer,
-                TARGET_LANGS,
-                multilingual_texts,
-                args.source_lang,
-                sae_release,
-                device,
-                args.train_n,
-                sv_bank,
-                gate_bank,
-                sae_device=sae_device,
-                sae_dtype=model_dtype if sae_device != "cpu" else torch.float32,
-                cache_dir=cache_dir,
-                cache_metadata={
-                    "model_path": str(Path(model_path).resolve()),
-                    "dataset_path": str(Path(args.dataset_path).resolve()),
-                    "source_lang": args.source_lang,
-                    "target_lang": args.target_lang,
-                    "base_layer": args.base_layer,
-                    "train_n": args.train_n,
-                    "sae_release": sae_release,
-                    "target_lan": TARGET_LANGS,
-                    "gate_topk": args.gate_topk,
-                    "learned_train_n": args.learned_train_n,
-                    "learned_epochs": args.learned_epochs,
-                    "learned_lr": args.learned_lr,
-                    "learned_collateral_weight": args.learned_collateral_weight,
-                },
-                progress_callback=lambda: step_progress("building learned gates"),
-                target_word=target_word,
-                learned_train_n=args.learned_train_n,
-                learned_epochs=args.learned_epochs,
-                learned_lr=args.learned_lr,
-                learned_collateral_weight=args.learned_collateral_weight,
-            )
     if args.thresholded_gating:
         thresholded_gate_bank = build_thresholded_gate_bank(
             window,
@@ -532,7 +508,7 @@ def main():
     fig_path = plots_dir / f"lid_{model_file_tag}_{args.source_lang}_to_{args.target_lang}_{run_tag}_{commit_short_sha}.png"
     df.to_csv(csv_path, index=False)
 
-    # Match the notebook/paper convention: SAE in green, SV in blue, optional Learned in orange, No SV in red.
+    # Match the paper convention: SAE in green, SV in blue, optional learned variants in orange/purple, No SV in red.
     plot_order = ["SAE-1L", "SAE-2L", "SAE-3L"]
     if args.learned_gating:
         plot_order.extend(["Learned-1L", "Learned-2L", "Learned-3L"])

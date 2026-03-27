@@ -1,7 +1,7 @@
 # SNLP Steering Experiments
 
-This repository reproduces the results from part 6 on the steering vectors from the paper Deng et al. 2025. There are code and experiment for:
-- steering vectors and SAE-gated steering
+This repository reproduces the results from part 6 on the steering vectors from the paper Deng et al. 2025. There are code and experiments for:
+- Steering vectors and SAE-gated steering
 - Adversarial Language Identification
 - Cross-Lingual Continuation
 - Flores-10 style data splits and top-feature extraction
@@ -17,8 +17,10 @@ The code is organized around two experiment entry points in `part_6/`:
 Core and utils can be found into into:
 
 - `utils.py`: dataset/model helpers and `compute_top_index_per_lan_for_layer`
+- `part_6/`: experiments and extensions from paper's section 6
 - `part_6/steering_utils.py`: steering, gating, prompting, CE evaluation, and generation helpers
 - `download.py`: downloads a supported base model preset
+- `scripts/`: plotting and dataset-inspection utilities
 
 Data lives in `data/`, generated outputs are written under `results/`, and reusable local artifacts are stored in `cache/` (for building SV data bank for instance, accross experiments). 
 
@@ -33,6 +35,7 @@ snlp/
 │   ├── baseline_experiment.py
 │   ├── lid_experiment.py
 │   └── steering_utils.py
+├── scripts/
 ├── results/
 │   ├── csv/
 │   ├── json/
@@ -57,7 +60,7 @@ uv run python -m part_6.lid_experiment
 
 - Python 3.11+
 - `uv`
-- enough disk space for the model, SAE checkpoints are not downloaded directly, only the needed are used on the fly.  
+- enough disk space for the model, SAE checkpoints are not downloaded directly, only the needed are used on the fly. 3 layers are loaded, each is ~600M.   
 - GPU support
 
 ### Installation
@@ -151,13 +154,31 @@ uv run python -m part_6.lid_experiment \
 
 Outputs:
 
-- `results/csv/lid_gemma-2-2b_fr_to_en_alpha0.5_train20_eval10_other10_first-token_<sha>.csv`
-- `results/plots/lid_gemma-2-2b_fr_to_en_alpha0.5_train20_eval10_other10_first-token_<sha>.png`
+- `results/csv/lid_gemma-2-2b_fr_to_en_layer20_alpha0.5_topk2_train20_eval10_other10_first-token_<sha>.csv`
+- `results/plots/lid_gemma-2-2b_fr_to_en_layer20_alpha0.5_topk2_train20_eval10_other10_first-token_<sha>.png`
 
 This matches the current defaults closely enough that you can usually just run:
 
 ```bash
 uv run python -m part_6.lid_experiment
+```
+
+Learned-gating variant:
+
+```bash
+uv run python -m part_6.lid_experiment \
+  --source-lang fr \
+  --target-lang en \
+  --learned-gating
+```
+
+Thresholded-gating variant:
+
+```bash
+uv run python -m part_6.lid_experiment \
+  --source-lang fr \
+  --target-lang en \
+  --thresholded-gating
 ```
 
 For a larger paper-style run, pass the larger dataset explicitly and increase the sample counts:
@@ -184,26 +205,23 @@ uv run python -m part_6.lid_experiment --no-cache
 
 ```bash
 uv run python -m part_6.clc_experiment \
-  --model-name qwen \
-  --source-lang fr \
+  --source-langs es fr pt ja ko th vi zh ar \
   --target-lang en \
-  --base-layer 18 \
-  --alpha 10.0
+  --base-layer 20
 ```
 
-Outputs:
+Output:
 
-- `results/csv/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.csv`
-- `results/plots/clc_qwen3-0.6b_fr_to_en_alpha10_train20_eval5.png`
+- `results/csv/clc_gemma-2-2b_all_to_en_alpha-by-lang_train20_eval10.csv`
 
-### Step 4 - Export v / nu Scores From MVA-SNLP
+### Step 4 - Utility Scripts
 
 If you already have a `v_score_runs/...` folder from `MVA-SNLP`, you can export a flat CSV
 containing, for each layer and language, the top-k feature indices and their corresponding
 `nu` values:
 
 ```bash
-uv run python -m part_6.export_v_scores \
+uv run python scripts/export_v_scores.py \
   --run-dir ../MVA-SNLP/v_score_runs/run_reprod_fig_1 \
   --top-k 5
 ```
@@ -211,6 +229,13 @@ uv run python -m part_6.export_v_scores \
 Output:
 
 - `results/csv/v_scores_run_reprod_fig_1_top5.csv`
+
+Other small helpers:
+
+```bash
+uv run python scripts/plot_figure8.py --csv-dir results/csv/figure8
+uv run python scripts/dump_lid_split.py --source-lang fr --target-lang en
+```
 
 ## Notes
 
