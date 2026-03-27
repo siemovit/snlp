@@ -284,46 +284,6 @@ def _collect_topk_feature_activations_for_texts(
     return torch.cat(rows, dim=0)
 
 
-def learn_linear_sae_gate(
-    pos_features: torch.Tensor,
-    neg_features: torch.Tensor,
-    *,
-    epochs: int = 200,
-    lr: float = 0.1,
-    weight_decay: float = 1e-4,
-) -> tuple[torch.Tensor, float]:
-    """Fit a small logistic gate from top-k SAE activations with source-vs-other labels."""
-    if pos_features.numel() == 0 or neg_features.numel() == 0:
-        raise ValueError("Need both positive and negative SAE activations to learn a gate.")
-
-    x = torch.cat([pos_features, neg_features], dim=0).to(torch.float32)
-    y = torch.cat(
-        [
-            torch.ones(pos_features.size(0), 1, dtype=torch.float32),
-            torch.zeros(neg_features.size(0), 1, dtype=torch.float32),
-        ],
-        dim=0,
-    )
-
-    mean = x.mean(dim=0, keepdim=True)
-    std = x.std(dim=0, keepdim=True).clamp_min(1e-6)
-    x_norm = (x - mean) / std
-
-    w = torch.zeros((x_norm.size(1), 1), dtype=torch.float32, requires_grad=True)
-    b = torch.zeros((1,), dtype=torch.float32, requires_grad=True)
-    optimizer = torch.optim.AdamW([w, b], lr=lr, weight_decay=weight_decay)
-    for _ in range(epochs):
-        logits = x_norm @ w + b
-        loss = F.binary_cross_entropy_with_logits(logits, y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    w_eff = (w.detach().squeeze(-1) / std.squeeze(0)).cpu()
-    b_eff = float((b.detach() - (mean / std) @ w.detach()).item())
-    return w_eff, b_eff
-
-
 def make_learned_sae_gate_fn(sae, feature_indices, weight: torch.Tensor, bias: float):
     """Create a soft gate from learned top-k SAE weights and a sigmoid output."""
     idx = torch.as_tensor(feature_indices, dtype=torch.long)
